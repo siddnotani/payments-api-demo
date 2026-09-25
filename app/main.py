@@ -29,6 +29,7 @@ class Currency(StrEnum):
 class TransactionStatus(StrEnum):
     PENDING = "PENDING"
     COMPLETED = "COMPLETED"
+    REFUNDED = "REFUNDED"
 
 
 class TransactionCreate(BaseModel):
@@ -99,3 +100,36 @@ def get_transaction(transaction_id: str) -> Transaction:
             detail=f"Transaction {transaction_id} not found",
         )
     return tx
+
+
+@app.post(
+    "/transactions/{transaction_id}/refund",
+    response_model=Transaction,
+    status_code=status.HTTP_201_CREATED,
+    tags=["transactions"],
+)
+def refund_transaction(transaction_id: str) -> Transaction:
+    original = _transactions.get(transaction_id)
+    if original is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Transaction {transaction_id} not found",
+        )
+    if original.status != TransactionStatus.COMPLETED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Transaction {transaction_id} is {original.status}, not COMPLETED",
+        )
+    refund = Transaction(
+        id=str(uuid4()),
+        from_account=original.to_account,
+        to_account=original.from_account,
+        amount=original.amount,
+        currency=original.currency,
+        reference=f"Refund of {original.id}",
+        status=TransactionStatus.COMPLETED,
+        created_at=datetime.now(UTC),
+    )
+    _transactions[original.id] = original.model_copy(update={"status": TransactionStatus.REFUNDED})
+    _transactions[refund.id] = refund
+    return refund
