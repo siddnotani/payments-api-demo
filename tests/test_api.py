@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import _transactions, app, reset_store
+from app.main import TransactionStatus, _transactions, app, reset_store
 
 client = TestClient(app)
 
@@ -93,3 +93,61 @@ def test_refund_rejects_non_completed_transaction():
 def test_refund_unknown_transaction():
     response = client.post("/transactions/does-not-exist/refund")
     assert response.status_code == 404
+
+
+def test_refund_is_retrievable_and_ordered_after_original():
+    original = client.post("/transactions", json=SAMPLE_TX).json()
+    refund = client.post(f"/transactions/{original['id']}/refund").json()
+
+    response = client.get(f"/transactions/{refund['id']}")
+    assert response.status_code == 200
+    assert response.json() == refund
+
+    listed = client.get("/transactions").json()
+    assert [tx["id"] for tx in listed] == [original["id"], refund["id"]]
+    assert listed[0] == {**original, "status": "REFUNDED"}
+    assert client.get("/health").json() == {"status": "ok", "transactions": 2}
+
+
+def test_refund_rejects_pending_transaction():
+    original = client.post("/transactions", json=SAMPLE_TX).json()
+    _transactions[original["id"]] = _transactions[original["id"]].model_copy(
+        update={"status": TransactionStatus.PENDING}
+    )
+
+    response = client.post(f"/transactions/{original['id']}/refund")
+    assert response.status_code == 409
+    assert response.json()["detail"] == f"Transaction {original['id']} is PENDING, not COMPLETED"
+    assert len(_transactions) == 1
+    assert client.get(f"/transactions/{original['id']}").json()["status"] == "PENDING"
+
+
+def test_refund_already_refunded_detail_and_store_unchanged():
+    original = client.post("/transactions", json=SAMPLE_TX).json()
+    first = client.post(f"/transactions/{original['id']}/refund").json()
+
+    response = client.post(f"/transactions/{original['id']}/refund")
+    assert response.status_code == 409
+    assert response.json()["detail"] == f"Transaction {original['id']} is REFUNDED, not COMPLETED"
+    assert sorted(_transactions) == sorted([original["id"], first["id"]])
+
+
+def test_refund_unknown_transaction_detail_and_store_unchanged():
+    response = client.post("/transactions/does-not-exist/refund")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Transaction does-not-exist not found"
+    assert client.get("/health").json() == {"status": "ok", "transactions": 0}
+
+
+def test_refund_of_refund_is_allowed():
+    original = client.post("/transactions", json=SAMPLE_TX).json()
+    refund = client.post(f"/transactions/{original['id']}/refund").json()
+
+    response = client.post(f"/transactions/{refund['id']}/refund")
+    assert response.status_code == 201
+    second = response.json()
+    assert second["from_account"] == SAMPLE_TX["from_account"]
+    assert second["to_account"] == SAMPLE_TX["to_account"]
+    assert second["reference"] == f"Refund of {refund['id']}"
+    assert client.get(f"/transactions/{refund['id']}").json()["status"] == "REFUNDED"
+    assert len(_transactions) == 3
