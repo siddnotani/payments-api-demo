@@ -99,3 +99,16 @@ def get_transaction(transaction_id: str) -> Transaction:
             detail=f"Transaction {transaction_id} not found",
         )
     return tx
+
+
+@app.delete(
+    "/transactions/{transaction_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["transactions"],
+)
+def cancel_transaction(transaction_id: str) -> None:
+    if _transactions.pop(transaction_id, None) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Transaction {transaction_id} not found",
+        )

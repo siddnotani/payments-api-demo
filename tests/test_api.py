@@ -60,3 +60,16 @@ def test_list_transactions():
     body = response.json()
     assert len(body) == 2
     assert [tx["amount"] for tx in body] == ["125.50", "10.00"]
+
+
+def test_cancel_transaction():
+    tx_id = client.post("/transactions", json=SAMPLE_TX).json()["id"]
+
+    response = client.delete(f"/transactions/{tx_id}")
+    assert response.status_code == 204
+    assert client.get("/transactions").json() == []
+
+
+def test_cancel_unknown_transaction_returns_404():
+    response = client.delete("/transactions/does-not-exist")
+    assert response.status_code == 404

@@ -13,6 +13,7 @@ real payments system.
 | POST   | `/transactions`             | Create a transaction (201)     |
 | GET    | `/transactions`             | List transactions              |
 | GET    | `/transactions/{id}`        | Get a transaction by id (404 if unknown) |
+| DELETE | `/transactions/{id}`        | Cancel (remove) a transaction (204)      |
 
 Transactions are stored in an in-memory dict, so state resets on restart and
 no database is required.
