@@ -86,8 +86,11 @@ def create_transaction(payload: TransactionCreate) -> Transaction:
 
 
 @app.get("/transactions", response_model=list[Transaction], tags=["transactions"])
-def list_transactions() -> list[Transaction]:
-    return sorted(_transactions.values(), key=lambda t: t.created_at)
+def list_transactions(currency: Currency | None = None) -> list[Transaction]:
+    txs = _transactions.values()
+    if currency is not None:
+        txs = [t for t in txs if t.currency == currency]
+    return sorted(txs, key=lambda t: t.created_at)
 
 
 @app.get("/transactions/{transaction_id}", response_model=Transaction, tags=["transactions"])

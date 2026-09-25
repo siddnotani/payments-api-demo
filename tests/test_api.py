@@ -60,3 +60,43 @@ def test_list_transactions():
     body = response.json()
     assert len(body) == 2
     assert [tx["amount"] for tx in body] == ["125.50", "10.00"]
+
+
+def test_list_transactions_filters_by_currency():
+    client.post("/transactions", json=SAMPLE_TX)
+    client.post("/transactions", json={**SAMPLE_TX, "currency": "USD", "amount": "10.00"})
+    client.post("/transactions", json={**SAMPLE_TX, "currency": "EUR", "amount": "20.00"})
+
+    response = client.get("/transactions", params={"currency": "EUR"})
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 2
+    assert all(tx["currency"] == "EUR" for tx in body)
+    assert [tx["amount"] for tx in body] == ["125.50", "20.00"]
+
+    response = client.get("/transactions", params={"currency": "USD"})
+    assert response.status_code == 200
+    assert [tx["amount"] for tx in response.json()] == ["10.00"]
+
+
+def test_list_transactions_currency_filter_no_match_returns_empty():
+    client.post("/transactions", json=SAMPLE_TX)
+
+    response = client.get("/transactions", params={"currency": "GBP"})
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_list_transactions_without_currency_returns_all():
+    client.post("/transactions", json=SAMPLE_TX)
+    client.post("/transactions", json={**SAMPLE_TX, "currency": "GBP"})
+
+    response = client.get("/transactions")
+    assert response.status_code == 200
+    assert {tx["currency"] for tx in response.json()} == {"EUR", "GBP"}
+
+
+@pytest.mark.parametrize("currency", ["JPY", "eur", ""])
+def test_list_transactions_rejects_invalid_currency(currency):
+    response = client.get("/transactions", params={"currency": currency})
+    assert response.status_code == 422
