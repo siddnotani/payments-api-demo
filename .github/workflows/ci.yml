@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Lint & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Format check (ruff)
+        run: ruff format --check .
+
+      - name: Test (pytest)
+        run: pytest -q
+
+  # Illustrative deployment stage. It runs only on pushes to main after tests
+  # pass and does not require any real secrets or infrastructure; replace the
+  # echo step with a real deploy (container push, Helm, etc.) when needed.
+  deploy:
+    name: Deploy (stub)
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to staging
+        run: |
+          echo "Would deploy commit ${GITHUB_SHA} to staging here."
+          echo "e.g. docker build/push, then 'kubectl rollout' or 'helm upgrade'."
