@@ -77,7 +77,7 @@ def create_transaction(payload: TransactionCreate) -> Transaction:
         )
     tx = Transaction(
         id=str(uuid4()),
-        status=TransactionStatus.COMPLETED,
+        status=TransactionStatus.PENDING,
         created_at=datetime.now(UTC),
         **payload.model_dump(),
     )
@@ -99,3 +99,28 @@ def get_transaction(transaction_id: str) -> Transaction:
             detail=f"Transaction {transaction_id} not found",
         )
     return tx
+
+
+@app.post(
+    "/transactions/{transaction_id}/confirm",
+    response_model=Transaction,
+    tags=["transactions"],
+)
+def confirm_transaction(transaction_id: str) -> Transaction:
+    tx = _transactions.get(transaction_id)
+    if tx is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Transaction {transaction_id} not found",
+        )
+    if tx.status != TransactionStatus.PENDING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Transaction {transaction_id} is {tx.status}; "
+                "only PENDING transactions can be confirmed"
+            ),
+        )
+    confirmed = tx.model_copy(update={"status": TransactionStatus.COMPLETED})
+    _transactions[transaction_id] = confirmed
+    return confirmed
