@@ -13,9 +13,23 @@ real payments system.
 | POST   | `/transactions`             | Create a transaction (201)     |
 | GET    | `/transactions`             | List transactions              |
 | GET    | `/transactions/{id}`        | Get a transaction by id (404 if unknown) |
+| POST   | `/transactions/{id}/refund` | Refund a COMPLETED transaction (201): creates a reversing transaction and marks the original REFUNDED; 409 if not COMPLETED, 404 if unknown |
 
 Transactions are stored in an in-memory dict, so state resets on restart and
 no database is required.
+
+## Transaction statuses
+
+| Status      | Meaning                                                        |
+| ----------- | -------------------------------------------------------------- |
+| `PENDING`   | Created but not yet settled                                    |
+| `COMPLETED` | Settled; eligible for refund                                   |
+| `REFUNDED`  | Reversed via `POST /transactions/{id}/refund`                  |
+
+Refunding a `COMPLETED` transaction creates a new `COMPLETED` transaction with
+`from_account`/`to_account` swapped, the same `amount` and `currency`, and
+`reference` set to `Refund of <original id>`. The original is marked
+`REFUNDED` and cannot be refunded again (409).
 
 ## Run locally
 

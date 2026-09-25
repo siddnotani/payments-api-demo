@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app, reset_store
+from app.main import _transactions, app, reset_store
 
 client = TestClient(app)
 
@@ -60,3 +60,36 @@ def test_list_transactions():
     body = response.json()
     assert len(body) == 2
     assert [tx["amount"] for tx in body] == ["125.50", "10.00"]
+
+
+def test_refund_transaction():
+    original = client.post("/transactions", json=SAMPLE_TX).json()
+
+    response = client.post(f"/transactions/{original['id']}/refund")
+    assert response.status_code == 201
+    refund = response.json()
+    assert refund["id"] != original["id"]
+    assert refund["from_account"] == SAMPLE_TX["to_account"]
+    assert refund["to_account"] == SAMPLE_TX["from_account"]
+    assert refund["amount"] == "125.50"
+    assert refund["currency"] == "EUR"
+    assert refund["reference"] == f"Refund of {original['id']}"
+    assert refund["status"] == "COMPLETED"
+
+    assert client.get(f"/transactions/{original['id']}").json()["status"] == "REFUNDED"
+    assert len(client.get("/transactions").json()) == 2
+
+
+def test_refund_rejects_non_completed_transaction():
+    original = client.post("/transactions", json=SAMPLE_TX).json()
+    client.post(f"/transactions/{original['id']}/refund")
+
+    # Original is now REFUNDED; refunding it again must be rejected.
+    response = client.post(f"/transactions/{original['id']}/refund")
+    assert response.status_code == 409
+    assert len(_transactions) == 2
+
+
+def test_refund_unknown_transaction():
+    response = client.post("/transactions/does-not-exist/refund")
+    assert response.status_code == 404
