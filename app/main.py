@@ -4,7 +4,6 @@ A deliberately small FastAPI service modelling a payments/transactions domain.
 State is held in memory so the service runs with no external dependencies.
 """
 
-import os
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
