@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "azure-devops": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@azure-devops/mcp", "${ADO_ORG}"],
+      "env": { "ADO_ORG": "${ADO_ORG}" }
+    }
+  }
+}

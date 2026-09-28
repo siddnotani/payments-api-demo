@@ -1,0 +1,51 @@
+[
+  {
+    "type": "User Story",
+    "title": "Add GET /transactions/{id} test coverage",
+    "tags": "devin; workshop; core",
+    "description": "GET /transactions/{id} has no automated test. Add pytest coverage for the found and not-found paths.",
+    "acceptance": "tests/test_api.py covers 200 with a matching body and 404 for an unknown id. ruff + pytest green. README 'Demo notes' updated."
+  },
+  {
+    "type": "User Story",
+    "title": "Refunds: POST /transactions/{id}/refund",
+    "tags": "devin; workshop; core",
+    "description": "Ops need to refund a completed transaction. Create a REFUNDED status and a refund endpoint that creates a reversing transaction (accounts swapped, same amount/currency, reference 'Refund of <id>') and marks the original REFUNDED.",
+    "acceptance": "201 with the reversing transaction; 404 unknown id; 409 if already refunded. Tests for all three. Endpoint table row in README."
+  },
+  {
+    "type": "User Story",
+    "title": "Filter GET /transactions by currency and status",
+    "tags": "devin; workshop; core",
+    "description": "Add optional query params currency= and status= to GET /transactions. Invalid values return 422.",
+    "acceptance": "Filters combine with AND. Tests for each filter and the 422 path. README row updated."
+  },
+  {
+    "type": "Task",
+    "title": "Migrate jobs/reconcile_ledger.py onto app.scheduler",
+    "tags": "devin; workshop; migration",
+    "description": "Port the nightly ledger reconciliation script onto the in-app scheduler per the legacy-job-migration skill. Delete the script and crontab line.",
+    "acceptance": "GET /ops/jobs lists reconcile_ledger with schedule '0 2 * * *'. Dry-run test with drift and without drift. Decimal amounts, no os.system, no utcnow()."
+  },
+  {
+    "type": "Task",
+    "title": "Migrate jobs/export_settlements.py onto app.scheduler",
+    "tags": "devin; workshop; migration",
+    "description": "Port the settlement CSV export per the legacy-job-migration skill. Output dir must be configurable; dry-run writes nothing.",
+    "acceptance": "GET /ops/jobs lists export_settlements. Test uses tmp_path. Idempotency (already exported) covered."
+  },
+  {
+    "type": "Task",
+    "title": "Migrate jobs/refresh_fx_rates.py onto app.scheduler",
+    "tags": "devin; workshop; migration",
+    "description": "Port FX rate refresh per the legacy-job-migration skill. Replace pickle cache with JSON, add request timeout, inject the HTTP client for tests.",
+    "acceptance": "GET /ops/jobs lists refresh_fx_rates. Test with a fake client covering success and provider-unavailable."
+  },
+  {
+    "type": "Bug",
+    "title": "FX provider timeout returns 500 to callers",
+    "tags": "devin; workshop; incident",
+    "description": "POST /ops/incidents/fx_timeout reproduces the production symptom: an FX provider timeout surfaces as an unhandled 500. Callers should get a 503 with a Retry-After header and the error should be logged once with the provider name.",
+    "acceptance": "503 + Retry-After for fx_timeout; other scenarios unchanged; test added."
+  }
+]

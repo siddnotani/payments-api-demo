@@ -1,0 +1,7 @@
+{
+  "name": "payments-workshop",
+  "version": "1.0.0",
+  "description": "House rules, skills and tool connections for the payments-api-demo service. Replaces the old Knowledge notes + Playbooks for this repo.",
+  "author": { "name": "Platform Enablement" },
+  "keywords": ["payments", "fastapi", "azure-devops", "workshop"]
+}

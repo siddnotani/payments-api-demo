@@ -1,0 +1,21 @@
+initialize:
+  - name: Python 3.11
+    uses: github.com/actions/setup-python@v5
+    with:
+      python-version: "3.11"
+  - name: Azure CLI + DevOps extension
+    run: |
+      curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+      az extension add --name azure-devops --yes
+
+maintenance: |
+  pip install -r requirements.txt
+
+knowledge: |
+  Lint: ruff check . && ruff format --check .
+  Test: pytest -q
+  Run:  uvicorn app.main:app --reload --port 8000  (Swagger at /docs)
+  Legacy cron scripts live in jobs/ and are excluded from ruff; migrate them via the
+  payments-workshop plugin skill legacy-job-migration, never edit them in place.
+  Azure DevOps: `az devops configure --defaults organization=$ADO_ORG_URL project=$ADO_PROJECT`
+  runs at session start when those env vars are present; work items are referenced as AB#<id>.
