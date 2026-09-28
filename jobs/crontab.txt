@@ -1,0 +1,6 @@
+# batch-host-01 — payments batch jobs (legacy)
+0 2 * * *      /opt/payments/venv/bin/python /opt/payments/jobs/reconcile_ledger.py >> /var/log/payments/reconcile.log 2>&1
+15 3 * * *     /opt/payments/venv/bin/python /opt/payments/jobs/export_settlements.py >> /var/log/payments/export.log 2>&1
+0 8 * * 1-5    /opt/payments/venv/bin/python /opt/payments/jobs/notify_overdue.py >> /var/log/payments/notify.log 2>&1
+*/30 * * * *   /opt/payments/venv/bin/python /opt/payments/jobs/refresh_fx_rates.py >> /var/log/payments/fx.log 2>&1
+0 4 1 * *      /opt/payments/venv/bin/python /opt/payments/jobs/archive_transactions.py >> /var/log/payments/archive.log 2>&1

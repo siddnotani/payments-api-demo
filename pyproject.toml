@@ -1,9 +1,14 @@
 [tool.ruff]
 line-length = 100
+# jobs/ is legacy cron code awaiting migration onto app.scheduler; it is not linted on purpose.
+extend-exclude = ["jobs"]
 target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+".devin/skills/*/workflow.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

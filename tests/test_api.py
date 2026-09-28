@@ -60,3 +60,24 @@ def test_list_transactions():
     body = response.json()
     assert len(body) == 2
     assert [tx["amount"] for tx in body] == ["125.50", "10.00"]
+
+
+def test_list_jobs_includes_heartbeat():
+    names = [j["name"] for j in client.get("/ops/jobs").json()]
+    assert "heartbeat" in names
+
+
+def test_run_job_dry_run():
+    response = client.post("/ops/jobs/heartbeat/run")
+    assert response.status_code == 200
+    assert response.json()["job"] == "heartbeat"
+
+
+def test_run_unknown_job_is_404():
+    assert client.post("/ops/jobs/nope/run").status_code == 404
+
+
+def test_simulated_incident_returns_500():
+    response = client.post("/ops/incidents/fx_timeout")
+    assert response.status_code == 500
+    assert "timed out" in response.json()["error"]

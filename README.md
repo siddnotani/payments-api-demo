@@ -13,6 +13,9 @@ real payments system.
 | POST   | `/transactions`             | Create a transaction (201)     |
 | GET    | `/transactions`             | List transactions              |
 | GET    | `/transactions/{id}`        | Get a transaction by id (404 if unknown) |
+| GET    | `/ops/jobs`                 | Jobs registered on the in-app scheduler |
+| POST   | `/ops/jobs/{name}/run`      | Run a job (`dry_run=true` by default)  |
+| POST   | `/ops/incidents/{scenario}` | Simulate an incident (always 500)      |
 
 Transactions are stored in an in-memory dict, so state resets on restart and
 no database is required.
@@ -48,6 +51,17 @@ pytest
 Python 3.11 setup, dependency install, `ruff` lint/format check and `pytest`.
 A stubbed `deploy` job (no real secrets) illustrates a deployment stage that
 runs only after tests pass on `main`.
+
+## Repository layout for the Access workshop
+
+- `jobs/` — five legacy cron scripts awaiting migration onto `app/scheduler.py`
+  (one unit of work each; excluded from ruff on purpose).
+- `app/jobs/` — migrated jobs; `heartbeat.py` is the reference shape.
+- `.devin/blueprint.yaml` — git-backed environment (Python 3.11, Azure CLI + DevOps extension).
+- `.devin/plugins/payments-workshop/` — the repo's plugin: always-on rules, an ADO rule,
+  three skills, ADO MCP.
+- `.devin/skills/migrate-jobs/` — dynamic workflow that fans the migration out.
+- `demo/` — walkthrough (`WORKSHOP.md`), automation definitions, ADO work items + seed script.
 
 ## Demo notes
 
