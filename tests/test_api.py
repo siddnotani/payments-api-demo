@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app, reset_store
+from app.scheduler import JobResult, job
 
 client = TestClient(app)
 
@@ -81,3 +82,65 @@ def test_simulated_incident_returns_500():
     response = client.post("/ops/incidents/fx_timeout")
     assert response.status_code == 500
     assert "timed out" in response.json()["error"]
+
+
+def test_list_jobs_returns_job_metadata():
+    response = client.get("/ops/jobs")
+    assert response.status_code == 200
+    heartbeat = next(j for j in response.json() if j["name"] == "heartbeat")
+    assert heartbeat == {
+        "name": "heartbeat",
+        "schedule": "*/5 * * * *",
+        "description": "Proves the scheduler is alive.",
+    }
+
+
+def test_run_job_returns_result_payload():
+    response = client.post("/ops/jobs/heartbeat/run")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["processed"] == 0
+    assert len(body["notes"]) == 1
+    assert body["notes"][0].startswith("alive at ")
+
+
+def test_run_job_with_dry_run_false():
+    response = client.post("/ops/jobs/heartbeat/run", params={"dry_run": "false"})
+    assert response.status_code == 200
+    assert response.json()["job"] == "heartbeat"
+
+
+def test_run_job_rejects_invalid_dry_run():
+    response = client.post("/ops/jobs/heartbeat/run", params={"dry_run": "maybe"})
+    assert response.status_code == 422
+
+
+def test_run_unknown_job_404_detail():
+    response = client.post("/ops/jobs/nope/run")
+    assert response.json() == {"detail": "Job nope not found"}
+
+
+def test_register_duplicate_job_name_raises():
+    with pytest.raises(ValueError, match="already registered"):
+        job("heartbeat", schedule="* * * * *")(lambda ctx: JobResult())
+
+
+@pytest.mark.parametrize(
+    ("scenario", "fragment"),
+    [
+        ("fx_timeout", "timed out"),
+        ("ledger_drift", "drift"),
+        ("duplicate_settlement", "already exported"),
+    ],
+)
+def test_simulated_incident_all_scenarios(scenario, fragment):
+    response = client.post(f"/ops/incidents/{scenario}")
+    assert response.status_code == 500
+    body = response.json()
+    assert body["scenario"] == scenario
+    assert fragment in body["error"]
+
+
+def test_simulated_incident_rejects_unknown_scenario():
+    response = client.post("/ops/incidents/meteor_strike")
+    assert response.status_code == 422
