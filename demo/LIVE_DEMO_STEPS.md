@@ -1,6 +1,6 @@
 # Live demo — steps and pre-prep
 
-Repo: the merged `payments-api-demo` (main). Everything below assumes the pre-prep is done the day before.
+**Where things run:** demos 1–4, code scans and CLI ⇄ Cloud run in the **customer's org** on a repo of theirs (ADO connection lives there) — prompts in `CUSTOMER_ORG_PROMPTS.md`. Only On-Call and Migrations (beta) run in **your org** on `payments-api-demo`; that part of this file still applies. The rest below is kept as the payments-api-demo reference/rehearsal version.
 
 ## Pre-prep (do before the workshop)
 
