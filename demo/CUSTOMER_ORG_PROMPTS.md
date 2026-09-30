@@ -38,20 +38,45 @@ Ask me for approval before saving the plugin.
 ```
 Then: Customize → Plugins → make it **Required** at org scope.
 
-### 0b. Automations (UI, ~10 min, create disabled)
-- **ADO work item assigned to Devin** — trigger: ADO work item updated; conditions: assigned to Devin AND tag `devin`; prompt: `/believe-house-rules:ado-work-item AB#{{id}}`; limits: 6 ACUs/run, 10 runs/hour, concurrency group `ado` = 3, queue when full.
-- **Failing CI** — trigger: check-run failed on `Believe - Agentic Engineering Labs`; condition: branch not starting `devin/`; prompt: diagnose, propose the fix as a diff, comment findings on the linked ADO item.
-- **Weekday chore** — schedule `0 6 * * 1-5`; prompt: report outdated deps and lint drift as a summary, no code changes.
-
-### 0c. ADO work items (UI or `az boards`, ~5 min)
-Create 4 items in `<ADO_PROJECT>`: two small features, one bug, one tagged for the fan-out. Tag none with `devin` yet.
-
-### 0d. Code scan (~2 min to start)
-Scans → New → `Believe - Agentic Engineering Labs` → security + dead code + test coverage. Runs read-only; finished by the workshop.
-
-### 0e. Fan-out rehearsal (~15 min, optional but recommended)
+### 0b. Automations — one session, ~10 min (Devin creates them via the automation tools)
 ```
-Run the fanout-<UNIT> workflow from the believe-house-rules plugin on the "Believe - Agentic Engineering Labs" repo. Post the run id when it starts.
+Create three Devin automations in this org, all DISABLED for now. Ask me to confirm each before saving.
+
+1. "ADO work item → Devin" — trigger: Azure DevOps work item updated in project <ADO_PROJECT>;
+   conditions: assigned to Devin AND tag `devin`; prompt: `/believe-house-rules:ado-work-item AB#{{id}}`;
+   limits: 6 ACUs per run, max 10 runs/hour, concurrency group `ado` with max 3 parallel, queue when full.
+2. "Failing CI" — trigger: check-run / pipeline failed on the "Believe - Agentic Engineering Labs" repo;
+   condition: branch does not start with `devin/`; prompt: diagnose the failure, propose the fix as a diff
+   in the session (never push), comment the findings on the linked ADO work item.
+3. "Weekday chore" — schedule `0 6 * * 1-5` (Europe/London); prompt: report outdated dependencies and
+   lint drift in "Believe - Agentic Engineering Labs" as a summary; no code changes, no pushes.
+
+If a trigger or field isn't available for this org's ADO connection, tell me the closest option instead of guessing.
+```
+
+### 0c. ADO work items — same or new session, ~5 min
+```
+Using the Azure DevOps connection, create 4 work items in project <ADO_PROJECT> for the
+"Believe - Agentic Engineering Labs" repo. Read the repo first and pick REAL, small, self-contained tasks:
+- 2 × User Story: small features (e.g. a missing input validation or a new field on an existing endpoint),
+  each doable with tests in under 20 minutes.
+- 1 × Bug: something you can actually find in the code (or a plausible edge case with repro steps).
+- 1 × Task tagged `fanout`: "<UNIT> sweep" describing the fan-out job for the dynamic workflow.
+Each item: clear title, acceptance criteria, files likely involved. Do NOT assign to Devin and do NOT add
+the `devin` tag — I'll do that live. Reply with the item ids and titles.
+```
+
+### 0d. Code scan — same session, ~2 min
+```
+Create a code scan on the "Believe - Agentic Engineering Labs" repo: security + dead code + test coverage
+(use the default profile if a combined one isn't available). Read-only, no remediation. Confirm with me
+before launching and post the scan link when it starts.
+```
+
+### 0e. Fan-out rehearsal — new session, ~15 min (optional but recommended)
+```
+Run the fanout-<UNIT> workflow from the believe-house-rules plugin on the "Believe - Agentic Engineering Labs"
+repo. Post the run id as soon as it starts and the structured roll-up when it finishes. No pushes.
 ```
 Note the run id as the fallback for demo 4.
 
