@@ -1,112 +1,105 @@
-# Prompts to run in the customer's Devin org
+# Prompts to run in the customer's Devin org — nothing pushed to their repos
 
-Their org has the Azure DevOps connection; `payments-api-demo` is not there. Replace `<REPO>` with the
-repo you pick in their org (any small service with tests is fine) and `<ADO_PROJECT>` with their ADO
-project. Run prompt 0 the day before; prompts 1–6 are the live demos.
+Constraints: their org has the ADO connection and two repos Devin can read; you have **no write access**.
+So every artifact lives inside Devin (org plugin, automations, sessions, scans), and demos end with a
+**reviewed diff inside the session** rather than an opened PR. ADO comments / state changes go through
+Devin's ADO connection. Replace `<REPO>` with one of their two repos and `<ADO_PROJECT>` with the project.
 
-On-Call and Migrations (beta) stay in your own org on `payments-api-demo` — see `LIVE_DEMO_STEPS.md`.
-
----
-
-## 0. Pre-prep (day before) — one session, ~30 min
-
-```
-Set up <REPO> as a Devin workshop demo repo. Open ONE PR with everything below; do not merge.
-
-1. Plugin `.devin/plugins/<REPO>-house-rules/` with:
-   - `.devin-plugin/plugin.json` (name, version 1.0.0, description).
-   - `AGENTS.md`: always-on rules — run the repo's lint + tests before every PR, add a test for every
-     new endpoint/function, reference Azure DevOps work items as `AB#<id>` in branch names, commit
-     messages and PR titles, never close ADO items (Resolved is the ceiling).
-   - `rules/azure-devops.md`: triggered rule (when the task mentions an ADO work item / AB#): read the
-     item with `az boards work-item show`, move it to Active at start, comment with the PR link and a
-     verification summary, set it to Resolved when the PR is open.
-   - `skills/ado-work-item/SKILL.md`: end-to-end skill — read item → Active → branch `devin/ab<id>-<slug>`
-     → implement → verify → PR titled `AB#<id>: <title>` → comment + Resolved.
-   - `skills/run-and-verify/SKILL.md`: how to install, start, smoke-test, lint and test this repo.
-   - `hooks/`: a pre-PR hook that runs lint + tests and blocks the PR if they fail.
-   - MCP config for Azure DevOps.
-2. `.devin/blueprint.yaml`: install deps, Azure CLI + `azure-devops` extension, lint/test/run knowledge.
-3. `.devin/skills/fanout-<UNIT>/workflow.py` + `SKILL.md`: a dynamic workflow that inventories
-   <UNITS — e.g. "every module without tests" / "every deprecated API call">, runs one agent per unit
-   in parallel, verifies each result with a separate agent, and rolls passing branches into one PR.
-   Make it resumable by run id and use structured outputs between steps.
-4. `demo/automations/`: markdown definitions (trigger, conditions, prompt, limits) for
-   (a) ADO work item assigned to Devin → `/<REPO>-house-rules:ado-work-item`,
-   (b) failing CI check-run → fix on the same branch, with a no-loop condition,
-   (c) weekday 06:00 schedule → dependency/lint chore, no PR if nothing to do.
-5. `demo/ado/work-items.json` + `seed_work_items.sh`: 5 realistic work items for this repo
-   (2 small features, 1 bug, 2 units for the fan-out), created with `az boards work-item create`.
-6. Seed 4–6 findings a code scan will catch (an unused module, a shell call with user input, a
-   hard-coded credential in a test fixture, an untested public function). Keep them obvious and in
-   one folder.
-7. `demo/WORKSHOP.md`: the demo order with the exact prompts below.
-```
-
-Then, manually (10 min):
-- Merge the PR. Install the plugin at org scope (Customize → Plugins).
-- Run `demo/ado/seed_work_items.sh`. Add an ADO Service Hook (work item updated → webhook) pointing at automation (a) once you create it in step 1 below and leave it disabled.
-- Create the three automations from `demo/automations/` (disabled).
-- Start a code scan (security + dead code + test coverage) on `<REPO>` so it is finished by the workshop.
-- Run the fan-out workflow once on a throwaway branch and note the run id (fallback for demo 4).
+On-Call and Migrations (beta) run in your own org on `payments-api-demo` — see `LIVE_DEMO_STEPS.md`.
 
 ---
 
-## 1. Opener — Devin suggests the automations (no prompt)
+## 0. Pre-prep (day before)
 
-UI only: Automations → Create → **Suggest for me**. Pick the ADO suggestion, show the pre-filled trigger, conditions, limits. Close it (the real one already exists).
+### 0a. Build the org plugin — one session, ~20 min
+```
+Create an org-scope plugin called `<REPO>-house-rules` using the plugin management tools (do NOT commit
+anything to <REPO>; the plugin lives in Devin). Read <REPO> first so the rules match how it is actually
+built and tested. Include:
 
-## 2. Automations on ADO
+- AGENTS.md (always-on): run the repo's lint + tests before declaring work done; add a test for every new
+  endpoint/function; never push, never open PRs — finish with a summary of the diff and the verification
+  output; reference Azure DevOps work items as `AB#<id>`; never close ADO items (Resolved is the ceiling).
+- rules/azure-devops.md (triggered when a task mentions an ADO work item or AB#): read the item with the
+  ADO connection, move it to Active at start, and when done comment on the item with the diff summary +
+  verification output and set it to Resolved.
+- skills/ado-work-item/SKILL.md: read item → Active → implement on a local branch → lint + test → summary
+  → ADO comment + Resolved.
+- skills/run-and-verify/SKILL.md: exact install / start / smoke-test / lint / test commands for <REPO>.
+- skills/fanout-<UNIT>/SKILL.md + workflow.py: a dynamic workflow that inventories <UNITS — e.g. "every
+  module without tests" / "every deprecated API call"> in <REPO>, runs one agent per unit in parallel,
+  verifies each result with a separate agent, and reports a structured roll-up (what passed, what needs
+  a human, diff per unit). Resumable by run id. No pushes.
+- hooks: a pre-completion hook that runs lint + tests and blocks "done" if they fail.
+- MCP: Azure DevOps.
 
-Enable automation (a). In ADO, assign work item **"<feature title>"** to Devin and tag it `devin`. Nothing to type; narrate: hook → conditions → session → Active → PR `AB#<id>` → comment → Resolved.
+Ask me for approval before saving the plugin.
+```
+Then: Customize → Plugins → make it **Required** at org scope.
 
-Fallback prompt (if the hook misfires, in a new session):
+### 0b. Automations (UI, ~10 min, create disabled)
+- **ADO work item assigned to Devin** — trigger: ADO work item updated; conditions: assigned to Devin AND tag `devin`; prompt: `/<REPO>-house-rules:ado-work-item AB#{{id}}`; limits: 6 ACUs/run, 10 runs/hour, concurrency group `ado` = 3, queue when full.
+- **Failing CI** — trigger: check-run failed on `<REPO>`; condition: branch not starting `devin/`; prompt: diagnose, propose the fix as a diff, comment findings on the linked ADO item.
+- **Weekday chore** — schedule `0 6 * * 1-5`; prompt: report outdated deps and lint drift as a summary, no code changes.
+
+### 0c. ADO work items (UI or `az boards`, ~5 min)
+Create 4 items in `<ADO_PROJECT>`: two small features, one bug, one tagged for the fan-out. Tag none with `devin` yet.
+
+### 0d. Code scan (~2 min to start)
+Scans → New → `<REPO>` → security + dead code + test coverage. Runs read-only; finished by the workshop.
+
+### 0e. Fan-out rehearsal (~15 min, optional but recommended)
+```
+Run the fanout-<UNIT> workflow from the <REPO>-house-rules plugin on <REPO>. Post the run id when it starts.
+```
+Note the run id as the fallback for demo 4.
+
+---
+
+## Live demos
+
+### 1. Opener — Devin suggests the automations (no prompt)
+Automations → Create → **Suggest for me**. Pick the ADO one; show pre-filled trigger, conditions, limits. Close it (yours already exists).
+
+### 2. Automations on ADO
+Enable the ADO automation. In ADO, assign feature item #1 to Devin and add tag `devin`. Narrate: hook → conditions → session → Active → implementation → tests → ADO comment with diff summary → Resolved.
+
+Fallback (new session):
 ```
 /<REPO>-house-rules:ado-work-item AB#<id>
 ```
 
-## 3. Plugins
+### 3. Plugins
+Customize → Plugins: the auto-migrated `knowledge` plugin next to `<REPO>-house-rules`. Then:
+```
+Add a rule to the <REPO>-house-rules plugin: never log or hard-code customer identifiers or secrets;
+redact them in examples and tests. Bump the version, show me the diff, ask before saving.
+```
 
-Customize → Plugins: show the auto-migrated `knowledge` plugin next to `<REPO>-house-rules`. Then in a session:
+### 4. Dynamic workflows
 ```
-Add a rule to the <REPO>-house-rules plugin: never log or commit customer identifiers or secrets;
-redact them in examples and tests. Bump the plugin version, show me the diff and ask before rolling it out.
+Run the fanout-<UNIT> workflow from the <REPO>-house-rules plugin on <REPO>. Post the run id when it starts.
 ```
+Mid-run: `Interrupt the agent on <unit>: <small change of approach>. Leave the others alone.`
+Then stop it and: `Resume workflow run <run id>.` Show the structured roll-up. Slow → open the rehearsal run.
 
-## 4. Dynamic workflows
-```
-Run the fanout-<UNIT> workflow on <REPO>. Post the run id as soon as it starts.
-```
-While running, in the workflow's session:
-```
-Interrupt the agent working on <one unit>: <a small change of approach>. Leave the others alone.
-```
-Then stop the run and:
-```
-Resume workflow run <run id>.
-```
-Show the roll-up PR. If slow, open the pre-warmed run from prep.
+### 5. Code scans (extra)
+Open the finished scan → Findings. Read three. **Assign to Devin** on one: the session explains and proposes the fix as a diff (no push).
 
-## 5. Code scans (extra)
-
-Open the finished scan → Findings. Read three. Click **Assign to Devin** on one; show the fix PR and the finding flipping to resolved. Optional: Schedule → weekly, new commits only.
-
-## 6. CLI ⇄ Cloud (extra)
-
-On your laptop in a clone of `<REPO>`:
+### 6. CLI ⇄ Cloud (extra)
+Laptop needs a read-only clone of `<REPO>` (ask them for a zip/clone URL beforehand; if that is not possible, use any public repo — this demo is about the CLI, not the code).
 ```
 devin
-> Implement AB#<small item id> in this repo.
+> Explain how <feature> works and add a test for it. Don't push.
 > /handoff
 ```
 ```
 devin ssh <session>
 devin forward <session> <app port>
 ```
-Back in the cloud session: `/pickup`.
+In the cloud session: `/pickup`.
 
 ---
 
-## 7–8. On-Call and Migrations (beta) — your org, payments-api-demo
-
+### 7–8. On-Call and Migrations (beta) — your org, payments-api-demo
 See `LIVE_DEMO_STEPS.md`, step 5.
