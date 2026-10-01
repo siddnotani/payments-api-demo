@@ -1,0 +1,58 @@
+name: PaymentsDemo
+options:
+  bundleIdPrefix: com.example.paymentsdemo
+  deploymentTarget:
+    iOS: "17.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  PaymentsDemo:
+    type: application
+    platform: iOS
+    sources:
+      - path: PaymentsDemo
+    info:
+      path: PaymentsDemo/Info.plist
+      properties:
+        CFBundleDisplayName: PaymentsDemo
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.paymentsdemo.PaymentsDemo
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_STYLE: Automatic
+  PaymentsDemoTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: PaymentsDemoTests
+    dependencies:
+      - target: PaymentsDemo
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.paymentsdemo.PaymentsDemoTests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  PaymentsDemo:
+    build:
+      targets:
+        PaymentsDemo: all
+        PaymentsDemoTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - PaymentsDemoTests

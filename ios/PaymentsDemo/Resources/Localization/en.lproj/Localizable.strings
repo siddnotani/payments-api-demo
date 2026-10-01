@@ -1,0 +1,81 @@
+/* Tabs */
+"tab.transactions" = "Transactions";
+"tab.new_payment" = "New Payment";
+"tab.ops" = "Ops";
+
+/* Common */
+"common.retry" = "Retry";
+"common.done" = "Done";
+"common.none" = "—";
+
+/* Status */
+"status.completed" = "COMPLETED";
+"status.pending" = "PENDING";
+
+/* Transactions list */
+"transactions.title" = "Transactions";
+"transactions.row.route_format" = "%@ → %@";
+"transactions.empty.title" = "No transactions yet";
+"transactions.empty.message" = "The API keeps transactions in memory, so this list resets whenever the server restarts. Create one from the New Payment tab, then pull to refresh.";
+"transactions.error.title" = "Can't reach the API";
+
+/* Transaction detail */
+"transaction_detail.title" = "Transaction";
+"transaction_detail.amount" = "Amount";
+"transaction_detail.currency" = "Currency";
+"transaction_detail.status" = "Status";
+"transaction_detail.accounts" = "Accounts";
+"transaction_detail.from_account" = "From account";
+"transaction_detail.to_account" = "To account";
+"transaction_detail.reference" = "Reference";
+"transaction_detail.created_at" = "Created at";
+"transaction_detail.id" = "ID";
+"transaction_detail.error.title" = "Couldn't load transaction";
+
+/* New payment */
+"new_payment.title" = "New Payment";
+"new_payment.section.accounts" = "Accounts";
+"new_payment.section.amount" = "Amount";
+"new_payment.section.reference" = "Reference";
+"new_payment.section.last_created" = "Last created";
+"new_payment.from_account" = "From account (e.g. IBAN)";
+"new_payment.to_account" = "To account (e.g. IBAN)";
+"new_payment.amount" = "0.00";
+"new_payment.currency" = "Currency";
+"new_payment.reference" = "Optional";
+"new_payment.reference.footer" = "Up to 140 characters.";
+"new_payment.submit" = "Send payment";
+"new_payment.fill_sample" = "Sample";
+"new_payment.success.title" = "Payment created";
+"new_payment.success.message_format" = "ID: %@\nStatus: %@";
+"new_payment.error.title" = "Payment failed";
+"new_payment.error.validation_title" = "Payment rejected (422)";
+"new_payment.error.invalid_amount" = "Enter a valid decimal amount, e.g. 125.50.";
+
+/* Ops */
+"ops.title" = "Ops";
+"ops.section.server" = "Server";
+"ops.base_url" = "Base URL";
+"ops.base_url.reset" = "Reset to default";
+"ops.health.status" = "Health";
+"ops.health.transactions" = "Transactions in memory";
+"ops.health.refresh" = "Check health";
+"ops.server.footer" = "Start the backend from the repo root with `uvicorn app.main:app --reload` (listens on localhost:8000). The iOS Simulator shares the Mac's localhost; on a device, use your Mac's LAN IP and run uvicorn with `--host 0.0.0.0`.";
+"ops.section.jobs" = "Scheduled jobs";
+"ops.jobs.dry_run" = "Dry run";
+"ops.jobs.empty" = "No jobs registered.";
+"ops.jobs.run" = "Run";
+"ops.jobs.result_title_format" = "Job %@ finished";
+"ops.jobs.result_message_format" = "Processed: %d\n%@";
+"ops.jobs.error_title" = "Job failed";
+"ops.section.incidents" = "Simulated incidents";
+"ops.incidents.footer" = "Each scenario makes the API return HTTP 500 so you can see how the app surfaces server errors.";
+"ops.incidents.error_title_format" = "Incident: %@";
+"ops.incidents.unexpected_success_title" = "Incident endpoint returned success";
+
+/* Errors */
+"error.invalid_base_url_format" = "Invalid base URL: %@";
+"error.transport_format" = "Network error: %@";
+"error.http_format" = "HTTP %d: %@";
+"error.decoding_format" = "Unexpected response: %@";
+"error.no_http_response" = "No HTTP response";
