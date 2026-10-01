@@ -30,3 +30,19 @@ class Transaction(TransactionCreate):
     id: str
     status: TransactionStatus
     created_at: datetime
+
+
+class DepositCreate(BaseModel):
+    amount: Decimal = Field(..., gt=0, examples=["500.00"])
+    currency: Currency = Currency.EUR
+    reference: str | None = Field(default=None, max_length=140)
+
+
+class BalanceEntry(BaseModel):
+    currency: Currency
+    amount: Decimal
+
+
+class AccountBalance(BaseModel):
+    account: str
+    balances: list[BalanceEntry]

@@ -14,7 +14,14 @@ from pydantic import BaseModel
 
 import app.jobs  # noqa: F401  (registers in-app jobs)
 from app import store
-from app.models import Transaction, TransactionCreate, TransactionStatus
+from app.models import (
+    AccountBalance,
+    BalanceEntry,
+    DepositCreate,
+    Transaction,
+    TransactionCreate,
+    TransactionStatus,
+)
 from app.scheduler import registered_jobs, run_job
 
 log = logging.getLogger("payments.api")
@@ -29,6 +36,7 @@ app = FastAPI(
 class HealthResponse(BaseModel):
     status: Literal["ok"]
     transactions: int
+    accounts: int
 
 
 class JobInfo(BaseModel):
@@ -54,7 +62,11 @@ _INCIDENT_MESSAGES: dict[str, str] = {
 
 @app.get("/health", response_model=HealthResponse, tags=["ops"])
 def health() -> HealthResponse:
-    return HealthResponse(status="ok", transactions=store.count_transactions())
+    return HealthResponse(
+        status="ok",
+        transactions=store.count_transactions(),
+        accounts=store.count_accounts(),
+    )
 
 
 @app.post(
@@ -69,14 +81,65 @@ def create_transaction(payload: TransactionCreate) -> Transaction:
             status_code=422,
             detail="from_account and to_account must differ",
         )
+    if store.EXTERNAL_ACCOUNT in (payload.from_account, payload.to_account):
+        raise HTTPException(
+            status_code=422,
+            detail=f"{store.EXTERNAL_ACCOUNT} is a reserved account; use the deposits endpoint",
+        )
+    return _record(payload)
+
+
+def _record(payload: TransactionCreate) -> Transaction:
     tx = Transaction(
         id=str(uuid4()),
         status=TransactionStatus.COMPLETED,
         created_at=datetime.now(UTC),
         **payload.model_dump(),
     )
-    store.add_transaction(tx)
+    try:
+        store.add_transaction(tx)
+    except store.InsufficientFundsError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return tx
+
+
+@app.post(
+    "/accounts/{account_id}/deposits",
+    response_model=Transaction,
+    status_code=status.HTTP_201_CREATED,
+    tags=["accounts"],
+)
+def create_deposit(account_id: str, payload: DepositCreate) -> Transaction:
+    """Credit an account from the EXTERNAL funding source."""
+    if account_id == store.EXTERNAL_ACCOUNT:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{store.EXTERNAL_ACCOUNT} is a reserved account",
+        )
+    return _record(
+        TransactionCreate(
+            from_account=store.EXTERNAL_ACCOUNT,
+            to_account=account_id,
+            **payload.model_dump(),
+        )
+    )
+
+
+@app.get("/accounts/{account_id}/balance", response_model=AccountBalance, tags=["accounts"])
+def get_balance(account_id: str) -> AccountBalance:
+    balances = store.get_balances(account_id)
+    if balances is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Account {account_id} not found",
+        )
+    return AccountBalance(
+        account=account_id,
+        balances=[
+            BalanceEntry(currency=currency, amount=amount)
+            for currency, amount in sorted(balances.items())
+        ],
+    )
 
 
 @app.get("/ops/jobs", response_model=list[JobInfo], tags=["ops"])
