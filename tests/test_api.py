@@ -1,8 +1,9 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app, reset_store
+from app.main import app
 from app.scheduler import JobResult, job
+from app.store import reset_store
 
 client = TestClient(app)
 
