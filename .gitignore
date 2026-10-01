@@ -22,3 +22,8 @@ htmlcov/
 .vscode/
 .idea/
 .DS_Store
+
+# iOS
+ios/build/
+xcuserdata/
+*.xcuserstate
