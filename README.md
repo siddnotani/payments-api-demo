@@ -15,6 +15,7 @@ real payments system.
 | GET    | `/transactions/{id}`        | Get a transaction by id (404 if unknown) |
 | POST   | `/accounts/{id}/deposits`   | Fund an account from `EXTERNAL` (201) |
 | GET    | `/accounts/{id}/balance`    | Per-currency balances (404 if unknown) |
+| GET    | `/accounts/{id}/statement`  | Ordered entries with running balance; optional `from_date`/`to_date` (404 if unknown) |
 | GET    | `/ops/jobs`                 | Jobs registered on the in-app scheduler |
 | POST   | `/ops/jobs/{name}/run`      | Run a job (`dry_run=true` by default)  |
 | POST   | `/ops/incidents/{scenario}` | Simulate an incident (always 500)      |

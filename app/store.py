@@ -51,6 +51,10 @@ def list_transactions() -> list[Transaction]:
     return sorted(_transactions.values(), key=lambda t: t.created_at)
 
 
+def list_account_transactions(account: str) -> list[Transaction]:
+    return [t for t in list_transactions() if account in (t.from_account, t.to_account)]
+
+
 def count_transactions() -> int:
     return len(_transactions)
 

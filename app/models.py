@@ -13,6 +13,11 @@ class Currency(StrEnum):
     USD = "USD"
 
 
+class Direction(StrEnum):
+    DEBIT = "DEBIT"
+    CREDIT = "CREDIT"
+
+
 class TransactionStatus(StrEnum):
     PENDING = "PENDING"
     COMPLETED = "COMPLETED"
@@ -46,3 +51,20 @@ class BalanceEntry(BaseModel):
 class AccountBalance(BaseModel):
     account: str
     balances: list[BalanceEntry]
+
+
+class StatementEntry(BaseModel):
+    transaction_id: str
+    direction: Direction
+    counterparty: str
+    amount: Decimal
+    currency: Currency
+    reference: str | None
+    timestamp: datetime
+    running_balance: Decimal
+
+
+class Statement(BaseModel):
+    account: str
+    generated_at: datetime
+    entries: list[StatementEntry]
