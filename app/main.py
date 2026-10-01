@@ -5,7 +5,8 @@ State is held in memory so the service runs with no external dependencies.
 """
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from typing import Literal
 from uuid import uuid4
 
@@ -17,7 +18,11 @@ from app import store
 from app.models import (
     AccountBalance,
     BalanceEntry,
+    Currency,
     DepositCreate,
+    Direction,
+    Statement,
+    StatementEntry,
     Transaction,
     TransactionCreate,
     TransactionStatus,
@@ -140,6 +145,49 @@ def get_balance(account_id: str) -> AccountBalance:
             for currency, amount in sorted(balances.items())
         ],
     )
+
+
+@app.get("/accounts/{account_id}/statement", response_model=Statement, tags=["accounts"])
+def get_statement(
+    account_id: str,
+    from_date: date | None = None,
+    to_date: date | None = None,
+) -> Statement:
+    """Entries ordered by created_at; date bounds are inclusive UTC calendar days.
+
+    running_balance is the account's balance in the entry's currency after that entry,
+    computed over the full history so it stays correct when filtering by date.
+    """
+    if from_date and to_date and from_date > to_date:
+        raise HTTPException(status_code=422, detail="from_date must be on or before to_date")
+    transactions = store.list_account_transactions(account_id)
+    if not transactions:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Account {account_id} not found",
+        )
+    running: dict[Currency, Decimal] = {}
+    entries: list[StatementEntry] = []
+    for tx in transactions:
+        is_debit = tx.from_account == account_id
+        delta = -tx.amount if is_debit else tx.amount
+        running[tx.currency] = running.get(tx.currency, Decimal("0")) + delta
+        day = tx.created_at.astimezone(UTC).date()
+        if (from_date and day < from_date) or (to_date and day > to_date):
+            continue
+        entries.append(
+            StatementEntry(
+                transaction_id=tx.id,
+                direction=Direction.DEBIT if is_debit else Direction.CREDIT,
+                counterparty=tx.to_account if is_debit else tx.from_account,
+                amount=tx.amount,
+                currency=tx.currency,
+                reference=tx.reference,
+                timestamp=tx.created_at,
+                running_balance=running[tx.currency],
+            )
+        )
+    return Statement(account=account_id, generated_at=datetime.now(UTC), entries=entries)
 
 
 @app.get("/ops/jobs", response_model=list[JobInfo], tags=["ops"])
