@@ -145,3 +145,78 @@ def test_simulated_incident_all_scenarios(scenario, fragment):
 def test_simulated_incident_rejects_unknown_scenario():
     response = client.post("/ops/incidents/meteor_strike")
     assert response.status_code == 422
+
+
+def test_health_counts_stored_transactions():
+    client.post("/transactions", json=SAMPLE_TX)
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "10.00"})
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "transactions": 2}
+
+
+def test_get_transaction_by_id():
+    created = client.post("/transactions", json=SAMPLE_TX).json()
+    response = client.get(f"/transactions/{created['id']}")
+    assert response.status_code == 200
+    assert response.json() == created
+
+
+def test_get_unknown_transaction_is_404():
+    response = client.get("/transactions/does-not-exist")
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Transaction does-not-exist not found"}
+
+
+def test_create_transaction_defaults():
+    payload = {k: v for k, v in SAMPLE_TX.items() if k not in ("currency", "reference")}
+    response = client.post("/transactions", json=payload)
+    assert response.status_code == 201
+    body = response.json()
+    assert body["currency"] == "EUR"
+    assert body["reference"] is None
+    assert body["created_at"]
+
+
+def test_create_transaction_same_account_detail():
+    payload = {**SAMPLE_TX, "to_account": SAMPLE_TX["from_account"]}
+    response = client.post("/transactions", json=payload)
+    assert response.json() == {"detail": "from_account and to_account must differ"}
+    assert client.get("/health").json()["transactions"] == 0
+
+
+def test_create_transaction_rejects_negative_amount():
+    response = client.post("/transactions", json={**SAMPLE_TX, "amount": "-5.00"})
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("field", ["from_account", "to_account"])
+def test_create_transaction_rejects_empty_account(field):
+    response = client.post("/transactions", json={**SAMPLE_TX, field: ""})
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("field", ["from_account", "to_account", "amount"])
+def test_create_transaction_rejects_missing_required_field(field):
+    payload = {k: v for k, v in SAMPLE_TX.items() if k != field}
+    response = client.post("/transactions", json=payload)
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("currency", ["GBP", "USD"])
+def test_create_transaction_accepts_supported_currencies(currency):
+    response = client.post("/transactions", json={**SAMPLE_TX, "currency": currency})
+    assert response.status_code == 201
+    assert response.json()["currency"] == currency
+
+
+def test_create_transaction_rejects_unsupported_currency():
+    response = client.post("/transactions", json={**SAMPLE_TX, "currency": "JPY"})
+    assert response.status_code == 422
+
+
+def test_create_transaction_reference_max_length():
+    ok = client.post("/transactions", json={**SAMPLE_TX, "reference": "x" * 140})
+    assert ok.status_code == 201
+    too_long = client.post("/transactions", json={**SAMPLE_TX, "reference": "x" * 141})
+    assert too_long.status_code == 422
