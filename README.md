@@ -9,16 +9,22 @@ real payments system.
 
 | Method | Path                        | Description                    |
 | ------ | --------------------------- | ------------------------------ |
-| GET    | `/health`                   | Health check + transaction count |
+| GET    | `/health`                   | Health check + transaction and account counts |
 | POST   | `/transactions`             | Create a transaction (201)     |
 | GET    | `/transactions`             | List transactions              |
 | GET    | `/transactions/{id}`        | Get a transaction by id (404 if unknown) |
+| POST   | `/accounts/{id}/deposits`   | Fund an account from `EXTERNAL` (201) |
+| GET    | `/accounts/{id}/balance`    | Per-currency balances (404 if unknown) |
 | GET    | `/ops/jobs`                 | Jobs registered on the in-app scheduler |
 | POST   | `/ops/jobs/{name}/run`      | Run a job (`dry_run=true` by default)  |
 | POST   | `/ops/incidents/{scenario}` | Simulate an incident (always 500)      |
 
 Transactions are stored in an in-memory dict, so state resets on restart and
 no database is required.
+
+Accounts are funded via deposits; a transfer that would take the sender's balance
+(per currency) below zero is rejected with 422. `EXTERNAL` is reserved as the
+deposit counterparty and cannot be used in `POST /transactions`.
 
 ## Run locally
 

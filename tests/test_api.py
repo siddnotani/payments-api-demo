@@ -23,13 +23,21 @@ def clean_store():
     reset_store()
 
 
+def fund(currency="EUR", amount="1000.00", account=SAMPLE_TX["from_account"]):
+    response = client.post(
+        f"/accounts/{account}/deposits", json={"amount": amount, "currency": currency}
+    )
+    assert response.status_code == 201
+
+
 def test_health_check():
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "transactions": 0}
+    assert response.json() == {"status": "ok", "transactions": 0, "accounts": 0}
 
 
 def test_create_transaction():
+    fund()
     response = client.post("/transactions", json=SAMPLE_TX)
     assert response.status_code == 201
     body = response.json()
@@ -54,14 +62,15 @@ def test_create_transaction_rejects_non_positive_amount():
 def test_list_transactions():
     assert client.get("/transactions").json() == []
 
+    fund()
     client.post("/transactions", json=SAMPLE_TX)
     client.post("/transactions", json={**SAMPLE_TX, "amount": "10.00"})
 
     response = client.get("/transactions")
     assert response.status_code == 200
     body = response.json()
-    assert len(body) == 2
-    assert [tx["amount"] for tx in body] == ["125.50", "10.00"]
+    assert len(body) == 3
+    assert [tx["amount"] for tx in body] == ["1000.00", "125.50", "10.00"]
 
 
 def test_list_jobs_includes_heartbeat():
@@ -148,14 +157,16 @@ def test_simulated_incident_rejects_unknown_scenario():
 
 
 def test_health_counts_stored_transactions():
+    fund()
     client.post("/transactions", json=SAMPLE_TX)
     client.post("/transactions", json={**SAMPLE_TX, "amount": "10.00"})
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "transactions": 2}
+    assert response.json() == {"status": "ok", "transactions": 3, "accounts": 2}
 
 
 def test_get_transaction_by_id():
+    fund()
     created = client.post("/transactions", json=SAMPLE_TX).json()
     response = client.get(f"/transactions/{created['id']}")
     assert response.status_code == 200
@@ -169,6 +180,7 @@ def test_get_unknown_transaction_is_404():
 
 
 def test_create_transaction_defaults():
+    fund()
     payload = {k: v for k, v in SAMPLE_TX.items() if k not in ("currency", "reference")}
     response = client.post("/transactions", json=payload)
     assert response.status_code == 201
@@ -205,6 +217,7 @@ def test_create_transaction_rejects_missing_required_field(field):
 
 @pytest.mark.parametrize("currency", ["GBP", "USD"])
 def test_create_transaction_accepts_supported_currencies(currency):
+    fund(currency)
     response = client.post("/transactions", json={**SAMPLE_TX, "currency": currency})
     assert response.status_code == 201
     assert response.json()["currency"] == currency
@@ -216,6 +229,7 @@ def test_create_transaction_rejects_unsupported_currency():
 
 
 def test_create_transaction_reference_max_length():
+    fund()
     ok = client.post("/transactions", json={**SAMPLE_TX, "reference": "x" * 140})
     assert ok.status_code == 201
     too_long = client.post("/transactions", json={**SAMPLE_TX, "reference": "x" * 141})
