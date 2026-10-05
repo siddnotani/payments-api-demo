@@ -1,7 +1,9 @@
+from datetime import UTC, datetime
+
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app, reset_store
+from app.main import Transaction, TransactionStatus, _transactions, app, reset_store
 from app.scheduler import JobResult, job
 
 client = TestClient(app)
@@ -212,3 +214,67 @@ def test_analytics_summary_exact_for_large_amounts():
     assert body["total_volume"]["EUR"] == big + ".01"
     assert body["average_amount"]["EUR"] == "5" + "0" * 39 + ".00"
     assert body["max_amount"] == big
+
+
+@pytest.mark.parametrize(
+    ("amounts", "expected_average"),
+    [
+        (["0.01", "0.02"], "0.02"),
+        (["0.01", "0.04"], "0.02"),
+        (["0.01", "0.06"], "0.04"),
+        (["0.005"], "0.00"),
+        (["10", "10", "10.01"], "10.00"),
+    ],
+)
+def test_analytics_summary_average_rounds_half_even_to_cents(amounts, expected_average):
+    for amount in amounts:
+        client.post("/transactions", json={**SAMPLE_TX, "amount": amount})
+
+    body = client.get("/analytics/summary").json()
+    assert body["average_amount"] == {"EUR": expected_average}
+
+
+def test_analytics_summary_ignores_rejected_transactions():
+    client.post("/transactions", json=SAMPLE_TX)
+    rejected = [
+        {**SAMPLE_TX, "amount": "0"},
+        {**SAMPLE_TX, "amount": "-5"},
+        {**SAMPLE_TX, "to_account": SAMPLE_TX["from_account"]},
+        {**SAMPLE_TX, "currency": "JPY"},
+        {**SAMPLE_TX, "reference": "x" * 141},
+    ]
+    for payload in rejected:
+        assert client.post("/transactions", json=payload).status_code == 422
+
+    body = client.get("/analytics/summary").json()
+    assert body["total_transactions"] == 1
+    assert body["total_volume"] == {"EUR": "125.50"}
+    assert body["by_status"] == {"PENDING": 0, "COMPLETED": 1}
+
+
+def test_analytics_summary_counts_pending_transactions():
+    client.post("/transactions", json=SAMPLE_TX)
+    pending = Transaction(
+        id="pending-1",
+        status=TransactionStatus.PENDING,
+        created_at=datetime.now(UTC),
+        **{**SAMPLE_TX, "amount": "20.00", "currency": "USD"},
+    )
+    _transactions[pending.id] = pending
+
+    body = client.get("/analytics/summary").json()
+    assert body["total_transactions"] == 2
+    assert body["by_status"] == {"PENDING": 1, "COMPLETED": 1}
+    assert body["total_volume"] == {"EUR": "125.50", "USD": "20.00"}
+
+
+def test_analytics_summary_total_matches_health_count():
+    for _ in range(3):
+        client.post("/transactions", json=SAMPLE_TX)
+
+    summary = client.get("/analytics/summary").json()
+    assert summary["total_transactions"] == client.get("/health").json()["transactions"] == 3
+
+
+def test_analytics_summary_rejects_post():
+    assert client.post("/analytics/summary").status_code == 405
