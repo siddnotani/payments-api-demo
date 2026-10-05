@@ -6,8 +6,9 @@ State is held in memory so the service runs with no external dependencies.
 
 import logging
 from datetime import UTC, datetime
-from decimal import ROUND_HALF_EVEN, Decimal
+from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, Context, Decimal, localcontext
 from enum import StrEnum
+from fractions import Fraction
 from typing import Literal
 from uuid import uuid4
 
@@ -103,7 +104,14 @@ def reset_store() -> None:
     _transactions.clear()
 
 
-_CENTS = Decimal("0.01")
+# Unbounded precision so sums of arbitrarily large accepted amounts stay exact.
+_EXACT = Context(prec=MAX_PREC, Emax=MAX_EMAX, Emin=MIN_EMIN)
+
+
+def _average_to_cents(total: Decimal, count: int) -> Decimal:
+    """Exact mean rounded half-even to 2 dp (Fraction avoids Decimal precision limits)."""
+    cents = round(Fraction(total) * 100 / count)
+    return Decimal(cents).scaleb(-2, _EXACT)
 
 
 def compute_analytics(transactions: list[Transaction]) -> AnalyticsSummary:
@@ -114,19 +122,20 @@ def compute_analytics(transactions: list[Transaction]) -> AnalyticsSummary:
         amounts_by_currency.setdefault(tx.currency, []).append(tx.amount)
         by_status[tx.status.value] += 1
 
-    by_currency = [
-        CurrencySummary(
-            currency=currency,
-            count=len(amounts),
-            total_amount=sum(amounts, Decimal(0)),
-            average_amount=(sum(amounts, Decimal(0)) / len(amounts)).quantize(
-                _CENTS, rounding=ROUND_HALF_EVEN
-            ),
-            min_amount=min(amounts),
-            max_amount=max(amounts),
+    by_currency = []
+    for currency, amounts in amounts_by_currency.items():
+        with localcontext(_EXACT):
+            total = sum(amounts, Decimal(0))
+        by_currency.append(
+            CurrencySummary(
+                currency=currency,
+                count=len(amounts),
+                total_amount=total,
+                average_amount=_average_to_cents(total, len(amounts)),
+                min_amount=min(amounts),
+                max_amount=max(amounts),
+            )
         )
-        for currency, amounts in amounts_by_currency.items()
-    ]
     by_currency.sort(key=lambda c: c.total_amount, reverse=True)
 
     timestamps = [tx.created_at for tx in transactions]

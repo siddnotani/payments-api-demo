@@ -275,12 +275,6 @@ def test_compute_analytics_counts_pending_status():
     assert summary.by_currency[0].total_amount == Decimal("376.50")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="average_amount quantize() raises decimal.InvalidOperation once the result needs "
-    "more than 28 significant digits, so one large accepted transaction makes "
-    "GET /analytics/summary return 500",
-)
 def test_analytics_handles_very_large_amount():
     unsafe_client = TestClient(app, raise_server_exceptions=False)
     huge = "1000000000000000000000000000"
@@ -289,4 +283,16 @@ def test_analytics_handles_very_large_amount():
 
     response = unsafe_client.get("/analytics/summary")
     assert response.status_code == 200
-    assert response.json()["by_currency"][0]["total_amount"] == huge
+    eur = response.json()["by_currency"][0]
+    assert eur["total_amount"] == huge
+    assert eur["average_amount"] == huge + ".00"
+
+
+def test_analytics_total_stays_exact_beyond_default_precision():
+    amounts = ["1000000000000000000000000000.01", "0.02"]
+    for amount in amounts:
+        client.post("/transactions", json={**SAMPLE_TX, "amount": amount})
+
+    eur = client.get("/analytics/summary").json()["by_currency"][0]
+    assert eur["total_amount"] == "1000000000000000000000000000.03"
+    assert eur["average_amount"] == "500000000000000000000000000.02"
