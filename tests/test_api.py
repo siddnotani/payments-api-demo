@@ -144,3 +144,60 @@ def test_simulated_incident_all_scenarios(scenario, fragment):
 def test_simulated_incident_rejects_unknown_scenario():
     response = client.post("/ops/incidents/meteor_strike")
     assert response.status_code == 422
+
+
+def test_analytics_empty_store():
+    response = client.get("/analytics/summary")
+    assert response.status_code == 200
+    assert response.json() == {
+        "total_transactions": 0,
+        "by_currency": [],
+        "by_status": {"PENDING": 0, "COMPLETED": 0},
+        "first_transaction_at": None,
+        "last_transaction_at": None,
+        "largest_transaction": None,
+    }
+
+
+def test_analytics_summary_aggregates_by_currency():
+    for currency, amount in [
+        ("EUR", "10.00"),
+        ("EUR", "20.00"),
+        ("EUR", "0.10"),
+        ("USD", "100.00"),
+        ("GBP", "5.25"),
+    ]:
+        client.post("/transactions", json={**SAMPLE_TX, "currency": currency, "amount": amount})
+
+    response = client.get("/analytics/summary")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_transactions"] == 5
+    assert body["by_status"] == {"PENDING": 0, "COMPLETED": 5}
+    assert [c["currency"] for c in body["by_currency"]] == ["USD", "EUR", "GBP"]
+
+    eur = next(c for c in body["by_currency"] if c["currency"] == "EUR")
+    assert eur["count"] == 3
+    assert eur["total_amount"] == "30.10"
+    assert eur["average_amount"] == "10.03"
+    assert eur["min_amount"] == "0.10"
+    assert eur["max_amount"] == "20.00"
+
+    usd = next(c for c in body["by_currency"] if c["currency"] == "USD")
+    assert usd["count"] == 1
+    assert usd["total_amount"] == "100.00"
+    assert usd["average_amount"] == "100.00"
+
+    assert body["first_transaction_at"] <= body["last_transaction_at"]
+
+
+def test_analytics_largest_transaction():
+    ids = {}
+    for amount in ["125.50", "999.99", "42.00"]:
+        ids[amount] = client.post("/transactions", json={**SAMPLE_TX, "amount": amount}).json()[
+            "id"
+        ]
+
+    body = client.get("/analytics/summary").json()
+    assert body["largest_transaction"]["id"] == ids["999.99"]
+    assert body["largest_transaction"]["amount"] == "999.99"

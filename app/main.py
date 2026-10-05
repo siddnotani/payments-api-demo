@@ -6,7 +6,7 @@ State is held in memory so the service runs with no external dependencies.
 
 import logging
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal
 from enum import StrEnum
 from typing import Literal
 from uuid import uuid4
@@ -51,6 +51,24 @@ class Transaction(TransactionCreate):
     created_at: datetime
 
 
+class CurrencySummary(BaseModel):
+    currency: Currency
+    count: int
+    total_amount: Decimal
+    average_amount: Decimal
+    min_amount: Decimal
+    max_amount: Decimal
+
+
+class AnalyticsSummary(BaseModel):
+    total_transactions: int
+    by_currency: list[CurrencySummary]
+    by_status: dict[str, int]
+    first_transaction_at: datetime | None
+    last_transaction_at: datetime | None
+    largest_transaction: Transaction | None
+
+
 class HealthResponse(BaseModel):
     status: Literal["ok"]
     transactions: int
@@ -83,6 +101,43 @@ _transactions: dict[str, Transaction] = {}
 def reset_store() -> None:
     """Clear all stored transactions (used by tests)."""
     _transactions.clear()
+
+
+_CENTS = Decimal("0.01")
+
+
+def compute_analytics(transactions: list[Transaction]) -> AnalyticsSummary:
+    """Aggregate transactions per currency and status using exact Decimal arithmetic."""
+    amounts_by_currency: dict[Currency, list[Decimal]] = {}
+    by_status = {s.value: 0 for s in TransactionStatus}
+    for tx in transactions:
+        amounts_by_currency.setdefault(tx.currency, []).append(tx.amount)
+        by_status[tx.status.value] += 1
+
+    by_currency = [
+        CurrencySummary(
+            currency=currency,
+            count=len(amounts),
+            total_amount=sum(amounts, Decimal(0)),
+            average_amount=(sum(amounts, Decimal(0)) / len(amounts)).quantize(
+                _CENTS, rounding=ROUND_HALF_EVEN
+            ),
+            min_amount=min(amounts),
+            max_amount=max(amounts),
+        )
+        for currency, amounts in amounts_by_currency.items()
+    ]
+    by_currency.sort(key=lambda c: c.total_amount, reverse=True)
+
+    timestamps = [tx.created_at for tx in transactions]
+    return AnalyticsSummary(
+        total_transactions=len(transactions),
+        by_currency=by_currency,
+        by_status=by_status,
+        first_transaction_at=min(timestamps, default=None),
+        last_transaction_at=max(timestamps, default=None),
+        largest_transaction=max(transactions, key=lambda t: t.amount, default=None),
+    )
 
 
 @app.get("/health", response_model=HealthResponse, tags=["ops"])
@@ -139,6 +194,11 @@ def simulate_incident(scenario: IncidentScenario) -> dict[str, str]:
     message = _INCIDENT_MESSAGES[scenario]
     log.error("incident.simulated", extra={"scenario": scenario, "detail": message})
     return {"scenario": scenario, "error": message}
+
+
+@app.get("/analytics/summary", response_model=AnalyticsSummary, tags=["analytics"])
+def analytics_summary() -> AnalyticsSummary:
+    return compute_analytics(list(_transactions.values()))
 
 
 @app.get("/transactions", response_model=list[Transaction], tags=["transactions"])
