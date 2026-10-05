@@ -1,7 +1,10 @@
+from datetime import UTC, datetime
+from decimal import Decimal
+
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app, reset_store
+from app.main import Transaction, TransactionStatus, app, compute_analytics, reset_store
 from app.scheduler import JobResult, job
 
 client = TestClient(app)
@@ -201,3 +204,89 @@ def test_analytics_largest_transaction():
     body = client.get("/analytics/summary").json()
     assert body["largest_transaction"]["id"] == ids["999.99"]
     assert body["largest_transaction"]["amount"] == "999.99"
+
+
+def test_analytics_average_rounds_half_even():
+    for amount in ["0.01", "0.04"]:
+        client.post("/transactions", json={**SAMPLE_TX, "amount": amount})
+
+    eur = client.get("/analytics/summary").json()["by_currency"][0]
+    assert eur["total_amount"] == "0.05"
+    assert eur["average_amount"] == "0.02"
+
+
+def test_analytics_total_amount_is_exact_decimal():
+    for _ in range(3):
+        client.post("/transactions", json={**SAMPLE_TX, "amount": "0.10"})
+
+    eur = client.get("/analytics/summary").json()["by_currency"][0]
+    assert eur["total_amount"] == "0.30"
+    assert eur["average_amount"] == "0.10"
+
+
+def test_analytics_only_lists_currencies_with_transactions():
+    client.post("/transactions", json={**SAMPLE_TX, "currency": "GBP", "amount": "7.00"})
+
+    body = client.get("/analytics/summary").json()
+    assert body["by_currency"] == [
+        {
+            "currency": "GBP",
+            "count": 1,
+            "total_amount": "7.00",
+            "average_amount": "7.00",
+            "min_amount": "7.00",
+            "max_amount": "7.00",
+        }
+    ]
+
+
+def test_analytics_first_and_last_transaction_timestamps():
+    created = [
+        client.post("/transactions", json={**SAMPLE_TX, "amount": amount}).json()
+        for amount in ["1.00", "2.00", "3.00"]
+    ]
+
+    body = client.get("/analytics/summary").json()
+    assert body["first_transaction_at"] == created[0]["created_at"]
+    assert body["last_transaction_at"] == created[-1]["created_at"]
+
+
+def test_analytics_summary_rejects_post():
+    assert client.post("/analytics/summary").status_code == 405
+
+
+def test_compute_analytics_counts_pending_status():
+    def make_tx(tx_status):
+        return Transaction(
+            **SAMPLE_TX,
+            id=str(tx_status),
+            status=tx_status,
+            created_at=datetime.now(UTC),
+        )
+
+    summary = compute_analytics(
+        [
+            make_tx(TransactionStatus.PENDING),
+            make_tx(TransactionStatus.PENDING),
+            make_tx(TransactionStatus.COMPLETED),
+        ]
+    )
+    assert summary.by_status == {"PENDING": 2, "COMPLETED": 1}
+    assert summary.by_currency[0].total_amount == Decimal("376.50")
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="average_amount quantize() raises decimal.InvalidOperation once the result needs "
+    "more than 28 significant digits, so one large accepted transaction makes "
+    "GET /analytics/summary return 500",
+)
+def test_analytics_handles_very_large_amount():
+    unsafe_client = TestClient(app, raise_server_exceptions=False)
+    huge = "1000000000000000000000000000"
+    created = unsafe_client.post("/transactions", json={**SAMPLE_TX, "amount": huge})
+    assert created.status_code == 201
+
+    response = unsafe_client.get("/analytics/summary")
+    assert response.status_code == 200
+    assert response.json()["by_currency"][0]["total_amount"] == huge
