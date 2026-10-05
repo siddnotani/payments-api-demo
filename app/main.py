@@ -6,8 +6,9 @@ State is held in memory so the service runs with no external dependencies.
 
 import logging
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, Context, Decimal, localcontext
 from enum import StrEnum
+from fractions import Fraction
 from typing import Literal
 from uuid import uuid4
 
@@ -49,6 +50,15 @@ class Transaction(TransactionCreate):
     id: str
     status: TransactionStatus
     created_at: datetime
+
+
+class AnalyticsSummary(BaseModel):
+    total_transactions: int
+    total_volume: dict[Currency, Decimal]
+    average_amount: dict[Currency, Decimal]
+    max_amount: Decimal | None
+    min_amount: Decimal | None
+    by_status: dict[TransactionStatus, int]
 
 
 class HealthResponse(BaseModel):
@@ -139,6 +149,43 @@ def simulate_incident(scenario: IncidentScenario) -> dict[str, str]:
     message = _INCIDENT_MESSAGES[scenario]
     log.error("incident.simulated", extra={"scenario": scenario, "detail": message})
     return {"scenario": scenario, "error": message}
+
+
+# Amounts are unbounded, so aggregate with enough precision that sums stay exact.
+_EXACT = Context(prec=MAX_PREC, Emax=MAX_EMAX, Emin=MIN_EMIN)
+_CENTS = Decimal("0.01")
+
+
+def _average(total: Decimal, count: int) -> Decimal:
+    """Exact mean rounded half-even to 2 dp (Fraction avoids Decimal precision limits)."""
+    cents = round(Fraction(total) * 100 / count)
+    return Decimal(cents).scaleb(-2, _EXACT).quantize(_CENTS, context=_EXACT)
+
+
+@app.get("/analytics/summary", response_model=AnalyticsSummary, tags=["analytics"])
+def analytics_summary() -> AnalyticsSummary:
+    total_volume: dict[Currency, Decimal] = {}
+    counts: dict[Currency, int] = {}
+    by_status = {s: 0 for s in TransactionStatus}
+    max_amount: Decimal | None = None
+    min_amount: Decimal | None = None
+    with localcontext(_EXACT):
+        for tx in _transactions.values():
+            total_volume[tx.currency] = total_volume.get(tx.currency, Decimal(0)) + tx.amount
+            counts[tx.currency] = counts.get(tx.currency, 0) + 1
+            by_status[tx.status] += 1
+            if max_amount is None or tx.amount > max_amount:
+                max_amount = tx.amount
+            if min_amount is None or tx.amount < min_amount:
+                min_amount = tx.amount
+    return AnalyticsSummary(
+        total_transactions=len(_transactions),
+        total_volume=total_volume,
+        average_amount={c: _average(total, counts[c]) for c, total in total_volume.items()},
+        max_amount=max_amount,
+        min_amount=min_amount,
+        by_status=by_status,
+    )
 
 
 @app.get("/transactions", response_model=list[Transaction], tags=["transactions"])
