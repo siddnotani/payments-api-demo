@@ -144,3 +144,71 @@ def test_simulated_incident_all_scenarios(scenario, fragment):
 def test_simulated_incident_rejects_unknown_scenario():
     response = client.post("/ops/incidents/meteor_strike")
     assert response.status_code == 422
+
+
+EMPTY_SUMMARY = {
+    "total_transactions": 0,
+    "total_volume": {},
+    "average_amount": {},
+    "max_amount": None,
+    "min_amount": None,
+    "by_status": {"PENDING": 0, "COMPLETED": 0},
+}
+
+
+def test_analytics_summary_empty_store():
+    response = client.get("/analytics/summary")
+    assert response.status_code == 200
+    assert response.json() == EMPTY_SUMMARY
+
+
+def test_analytics_summary_seeded_transactions():
+    for amount, currency in [
+        ("125.50", "EUR"),
+        ("10.00", "EUR"),
+        ("0.01", "EUR"),
+        ("99.99", "USD"),
+        ("300", "GBP"),
+        ("200.25", "GBP"),
+    ]:
+        client.post("/transactions", json={**SAMPLE_TX, "amount": amount, "currency": currency})
+
+    response = client.get("/analytics/summary")
+    assert response.status_code == 200
+    assert response.json() == {
+        "total_transactions": 6,
+        "total_volume": {"EUR": "135.51", "USD": "99.99", "GBP": "500.25"},
+        "average_amount": {"EUR": "45.17", "USD": "99.99", "GBP": "250.12"},
+        "max_amount": "300",
+        "min_amount": "0.01",
+        "by_status": {"PENDING": 0, "COMPLETED": 6},
+    }
+
+
+def test_analytics_summary_updates_after_new_transaction():
+    client.post("/transactions", json=SAMPLE_TX)
+    before = client.get("/analytics/summary").json()
+    assert before["total_transactions"] == 1
+    assert before["total_volume"] == {"EUR": "125.50"}
+
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "4.50"})
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "7.25", "currency": "USD"})
+
+    after = client.get("/analytics/summary").json()
+    assert after["total_transactions"] == 3
+    assert after["total_volume"] == {"EUR": "130.00", "USD": "7.25"}
+    assert after["average_amount"] == {"EUR": "65.00", "USD": "7.25"}
+    assert after["max_amount"] == "125.50"
+    assert after["min_amount"] == "4.50"
+    assert after["by_status"]["COMPLETED"] == 3
+
+
+def test_analytics_summary_exact_for_large_amounts():
+    big = "1" + "0" * 40
+    client.post("/transactions", json={**SAMPLE_TX, "amount": big})
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "0.01"})
+
+    body = client.get("/analytics/summary").json()
+    assert body["total_volume"]["EUR"] == big + ".01"
+    assert body["average_amount"]["EUR"] == "5" + "0" * 39 + ".00"
+    assert body["max_amount"] == big
