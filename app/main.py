@@ -6,8 +6,9 @@ State is held in memory so the service runs with no external dependencies.
 
 import logging
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, Context, Decimal, localcontext
 from enum import StrEnum
+from fractions import Fraction
 from typing import Literal
 from uuid import uuid4
 
@@ -56,6 +57,19 @@ class HealthResponse(BaseModel):
     transactions: int
 
 
+class AccountActivity(BaseModel):
+    account: str
+    transaction_count: int
+
+
+class AnalyticsSummary(BaseModel):
+    total_transactions: int
+    total_volume: dict[Currency, Decimal]
+    average_amount: Decimal | None
+    largest_transaction: Transaction | None
+    top_accounts: list[AccountActivity]
+
+
 class JobInfo(BaseModel):
     name: str
     schedule: str
@@ -78,6 +92,9 @@ _INCIDENT_MESSAGES: dict[str, str] = {
 
 
 _transactions: dict[str, Transaction] = {}
+
+TOP_ACCOUNTS_LIMIT = 5
+_EXACT = Context(prec=MAX_PREC, Emax=MAX_EMAX, Emin=MIN_EMIN)
 
 
 def reset_store() -> None:
@@ -144,6 +161,38 @@ def simulate_incident(scenario: IncidentScenario) -> dict[str, str]:
 @app.get("/transactions", response_model=list[Transaction], tags=["transactions"])
 def list_transactions() -> list[Transaction]:
     return sorted(_transactions.values(), key=lambda t: t.created_at)
+
+
+@app.get("/analytics/summary", response_model=AnalyticsSummary, tags=["analytics"])
+def analytics_summary() -> AnalyticsSummary:
+    """Aggregate the transaction store on read. Amounts are summed exactly, not as floats."""
+    txs = sorted(_transactions.values(), key=lambda t: (t.created_at, t.id))
+    total_volume = {currency: Decimal(0) for currency in Currency}
+    activity: dict[str, int] = {}
+    with localcontext(_EXACT):
+        for tx in txs:
+            total_volume[tx.currency] += tx.amount
+            for account in (tx.from_account, tx.to_account):
+                activity[account] = activity.get(account, 0) + 1
+        grand_total = sum((tx.amount for tx in txs), Decimal(0))
+
+    average_amount = None
+    if txs:
+        # Round half-even to cents via Fraction so huge amounts never hit Decimal precision limits.
+        cents = round(Fraction(grand_total) * 100 / len(txs))
+        average_amount = Decimal(cents).scaleb(-2, _EXACT)
+
+    top_accounts = sorted(activity.items(), key=lambda item: (-item[1], item[0]))
+    return AnalyticsSummary(
+        total_transactions=len(txs),
+        total_volume=total_volume,
+        average_amount=average_amount,
+        largest_transaction=max(txs, key=lambda t: t.amount, default=None),
+        top_accounts=[
+            AccountActivity(account=account, transaction_count=count)
+            for account, count in top_accounts[:TOP_ACCOUNTS_LIMIT]
+        ],
+    )
 
 
 @app.get("/transactions/{transaction_id}", response_model=Transaction, tags=["transactions"])

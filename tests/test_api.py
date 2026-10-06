@@ -144,3 +144,136 @@ def test_simulated_incident_all_scenarios(scenario, fragment):
 def test_simulated_incident_rejects_unknown_scenario():
     response = client.post("/ops/incidents/meteor_strike")
     assert response.status_code == 422
+
+
+def test_analytics_summary_empty_store():
+    response = client.get("/analytics/summary")
+    assert response.status_code == 200
+    assert response.json() == {
+        "total_transactions": 0,
+        "total_volume": {"EUR": "0", "GBP": "0", "USD": "0"},
+        "average_amount": None,
+        "largest_transaction": None,
+        "top_accounts": [],
+    }
+
+
+def test_analytics_summary_aggregates_multiple_currencies():
+    alice, bob, carol = "ACC-ALICE", "ACC-BOB", "ACC-CAROL"
+    for from_account, to_account, amount, currency in [
+        (alice, bob, "100.10", "EUR"),
+        (alice, carol, "50.20", "EUR"),
+        (bob, carol, "200.00", "USD"),
+        (carol, alice, "0.05", "GBP"),
+    ]:
+        client.post(
+            "/transactions",
+            json={
+                "from_account": from_account,
+                "to_account": to_account,
+                "amount": amount,
+                "currency": currency,
+            },
+        )
+
+    response = client.get("/analytics/summary")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_transactions"] == 4
+    assert body["total_volume"] == {"EUR": "150.30", "GBP": "0.05", "USD": "200.00"}
+    # 350.35 / 4 = 87.5875, rounded half-even to cents.
+    assert body["average_amount"] == "87.59"
+    assert body["largest_transaction"]["amount"] == "200.00"
+    assert body["largest_transaction"]["currency"] == "USD"
+    # Alice and Carol tie on 3 and are ordered by account id.
+    assert body["top_accounts"] == [
+        {"account": alice, "transaction_count": 3},
+        {"account": carol, "transaction_count": 3},
+        {"account": bob, "transaction_count": 2},
+    ]
+
+
+def test_analytics_summary_limits_top_accounts():
+    for i in range(7):
+        client.post(
+            "/transactions",
+            json={**SAMPLE_TX, "from_account": "ACC-HUB", "to_account": f"ACC-{i}"},
+        )
+
+    top = client.get("/analytics/summary").json()["top_accounts"]
+    assert len(top) == 5
+    assert top[0] == {"account": "ACC-HUB", "transaction_count": 7}
+    assert [a["account"] for a in top[1:]] == ["ACC-0", "ACC-1", "ACC-2", "ACC-3"]
+
+
+def test_analytics_summary_largest_transaction_tie_picks_earliest():
+    first = client.post("/transactions", json=SAMPLE_TX).json()
+    client.post("/transactions", json=SAMPLE_TX)
+
+    body = client.get("/analytics/summary").json()
+    assert body["largest_transaction"]["id"] == first["id"]
+
+
+def test_analytics_summary_keeps_large_amounts_exact():
+    huge = "1" + "0" * 40 + ".01"
+    client.post("/transactions", json={**SAMPLE_TX, "amount": huge})
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "0.01"})
+
+    body = client.get("/analytics/summary").json()
+    assert body["total_volume"]["EUR"] == "1" + "0" * 40 + ".02"
+    assert body["average_amount"] == "5" + "0" * 39 + ".01"
+
+
+def test_analytics_summary_does_not_mutate_state():
+    client.post("/transactions", json=SAMPLE_TX)
+    client.post("/transactions", json={**SAMPLE_TX, "currency": "USD", "amount": "9.99"})
+    before = client.get("/transactions").json()
+
+    first = client.get("/analytics/summary")
+    second = client.get("/analytics/summary")
+
+    assert first.status_code == second.status_code == 200
+    assert first.json() == second.json()
+    assert client.get("/transactions").json() == before
+    assert client.get("/health").json()["transactions"] == 2
+
+
+@pytest.mark.parametrize(
+    ("amounts", "expected_average"),
+    [
+        # 0.025 and 0.015 are exact half-cent ties; half-even rounds both to 0.02.
+        (["0.01", "0.04"], "0.02"),
+        (["0.01", "0.02"], "0.02"),
+    ],
+)
+def test_analytics_summary_average_rounds_half_even(amounts, expected_average):
+    for amount in amounts:
+        client.post("/transactions", json={**SAMPLE_TX, "amount": amount})
+
+    assert client.get("/analytics/summary").json()["average_amount"] == expected_average
+
+
+def test_analytics_summary_keeps_sub_cent_volume_exact():
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "0.001"})
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "0.004"})
+
+    body = client.get("/analytics/summary").json()
+    assert body["total_volume"]["EUR"] == "0.005"
+    assert body["average_amount"] == "0.00"
+    assert body["largest_transaction"]["amount"] == "0.004"
+
+
+def test_analytics_summary_ignores_rejected_transactions():
+    rejected = [
+        {**SAMPLE_TX, "to_account": SAMPLE_TX["from_account"]},
+        {**SAMPLE_TX, "amount": "0"},
+        {**SAMPLE_TX, "currency": "JPY"},
+    ]
+    for payload in rejected:
+        assert client.post("/transactions", json=payload).status_code == 422
+
+    response = client.get("/analytics/summary")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_transactions"] == 0
+    assert body["top_accounts"] == []
