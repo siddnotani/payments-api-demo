@@ -236,3 +236,44 @@ def test_analytics_summary_does_not_mutate_state():
     assert first.json() == second.json()
     assert client.get("/transactions").json() == before
     assert client.get("/health").json()["transactions"] == 2
+
+
+@pytest.mark.parametrize(
+    ("amounts", "expected_average"),
+    [
+        # 0.025 and 0.015 are exact half-cent ties; half-even rounds both to 0.02.
+        (["0.01", "0.04"], "0.02"),
+        (["0.01", "0.02"], "0.02"),
+    ],
+)
+def test_analytics_summary_average_rounds_half_even(amounts, expected_average):
+    for amount in amounts:
+        client.post("/transactions", json={**SAMPLE_TX, "amount": amount})
+
+    assert client.get("/analytics/summary").json()["average_amount"] == expected_average
+
+
+def test_analytics_summary_keeps_sub_cent_volume_exact():
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "0.001"})
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "0.004"})
+
+    body = client.get("/analytics/summary").json()
+    assert body["total_volume"]["EUR"] == "0.005"
+    assert body["average_amount"] == "0.00"
+    assert body["largest_transaction"]["amount"] == "0.004"
+
+
+def test_analytics_summary_ignores_rejected_transactions():
+    rejected = [
+        {**SAMPLE_TX, "to_account": SAMPLE_TX["from_account"]},
+        {**SAMPLE_TX, "amount": "0"},
+        {**SAMPLE_TX, "currency": "JPY"},
+    ]
+    for payload in rejected:
+        assert client.post("/transactions", json=payload).status_code == 422
+
+    response = client.get("/analytics/summary")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_transactions"] == 0
+    assert body["top_accounts"] == []
