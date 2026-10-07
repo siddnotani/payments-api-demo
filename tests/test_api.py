@@ -1,7 +1,10 @@
+from datetime import UTC, datetime
+from decimal import Decimal
+
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app, reset_store
+from app.main import Transaction, TransactionStatus, _transactions, app, reset_store
 from app.scheduler import JobResult, job
 
 client = TestClient(app)
@@ -144,3 +147,54 @@ def test_simulated_incident_all_scenarios(scenario, fragment):
 def test_simulated_incident_rejects_unknown_scenario():
     response = client.post("/ops/incidents/meteor_strike")
     assert response.status_code == 422
+
+
+def test_analytics_summary_empty_store():
+    response = client.get("/analytics/summary")
+    assert response.status_code == 200
+    assert response.json() == {
+        "total_transactions": 0,
+        "total_volume_by_currency": [
+            {"currency": "EUR", "count": 0, "total_amount": "0"},
+            {"currency": "GBP", "count": 0, "total_amount": "0"},
+            {"currency": "USD", "count": 0, "total_amount": "0"},
+        ],
+        "by_status": {"PENDING": 0, "COMPLETED": 0},
+        "largest_transaction": None,
+    }
+
+
+def test_analytics_summary_aggregates_currencies_and_statuses():
+    client.post("/transactions", json=SAMPLE_TX)
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "10.00"})
+    largest = client.post(
+        "/transactions", json={**SAMPLE_TX, "amount": "999.99", "currency": "USD"}
+    ).json()
+    pending = Transaction(
+        id="pending-1",
+        status=TransactionStatus.PENDING,
+        created_at=datetime.now(UTC),
+        **{**SAMPLE_TX, "amount": Decimal("5.25"), "currency": "GBP"},
+    )
+    _transactions[pending.id] = pending
+
+    response = client.get("/analytics/summary")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_transactions"] == 4
+    assert body["total_volume_by_currency"] == [
+        {"currency": "EUR", "count": 2, "total_amount": "135.50"},
+        {"currency": "GBP", "count": 1, "total_amount": "5.25"},
+        {"currency": "USD", "count": 1, "total_amount": "999.99"},
+    ]
+    assert body["by_status"] == {"PENDING": 1, "COMPLETED": 3}
+    assert body["largest_transaction"] == largest
+
+
+def test_analytics_summary_total_is_exact_for_large_amounts():
+    big = "1" + "0" * 40 + ".01"
+    client.post("/transactions", json={**SAMPLE_TX, "amount": big})
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "0.01"})
+
+    eur = client.get("/analytics/summary").json()["total_volume_by_currency"][0]
+    assert eur == {"currency": "EUR", "count": 2, "total_amount": "1" + "0" * 40 + ".02"}
