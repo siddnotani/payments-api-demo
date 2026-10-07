@@ -198,3 +198,106 @@ def test_analytics_summary_total_is_exact_for_large_amounts():
 
     eur = client.get("/analytics/summary").json()["total_volume_by_currency"][0]
     assert eur == {"currency": "EUR", "count": 2, "total_amount": "1" + "0" * 40 + ".02"}
+
+
+@pytest.mark.parametrize("currency", ["EUR", "GBP", "USD"])
+@pytest.mark.parametrize("status", [TransactionStatus.PENDING, TransactionStatus.COMPLETED])
+def test_analytics_summary_single_transaction_keeps_zero_buckets(currency, status):
+    transaction = Transaction(
+        id="single-transaction",
+        status=status,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        **{**SAMPLE_TX, "currency": currency},
+    )
+    _transactions[transaction.id] = transaction
+
+    response = client.get("/analytics/summary")
+    assert response.status_code == 200
+    assert response.json() == {
+        "total_transactions": 1,
+        "total_volume_by_currency": [
+            {
+                "currency": bucket,
+                "count": int(bucket == currency),
+                "total_amount": "125.50" if bucket == currency else "0",
+            }
+            for bucket in ["EUR", "GBP", "USD"]
+        ],
+        "by_status": {
+            "PENDING": int(status == TransactionStatus.PENDING),
+            "COMPLETED": int(status == TransactionStatus.COMPLETED),
+        },
+        "largest_transaction": transaction.model_dump(mode="json"),
+    }
+
+
+def test_analytics_summary_largest_tie_uses_earliest_created_at():
+    later = Transaction(
+        id="later-largest",
+        status=TransactionStatus.COMPLETED,
+        created_at=datetime(2026, 1, 3, tzinfo=UTC),
+        **{**SAMPLE_TX, "amount": "999.99", "currency": "USD"},
+    )
+    earlier = Transaction(
+        id="earlier-largest",
+        status=TransactionStatus.PENDING,
+        created_at=datetime(2026, 1, 2, tzinfo=UTC),
+        **{**SAMPLE_TX, "amount": "999.99", "currency": "GBP"},
+    )
+    smallest = Transaction(
+        id="earliest-but-smaller",
+        status=TransactionStatus.COMPLETED,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        **SAMPLE_TX,
+    )
+    for transaction in [later, earlier, smallest]:
+        _transactions[transaction.id] = transaction
+
+    response = client.get("/analytics/summary")
+    assert response.status_code == 200
+    assert response.json()["largest_transaction"] == earlier.model_dump(mode="json")
+
+
+@pytest.mark.parametrize("currency", ["EUR", "GBP", "USD"])
+def test_analytics_summary_preserves_fractional_precision(currency):
+    for amount in ["0.10", "0.20", "0.0001"]:
+        response = client.post(
+            "/transactions", json={**SAMPLE_TX, "amount": amount, "currency": currency}
+        )
+        assert response.status_code == 201
+
+    response = client.get("/analytics/summary")
+    assert response.status_code == 200
+    bucket = next(
+        item for item in response.json()["total_volume_by_currency"] if item["currency"] == currency
+    )
+    assert bucket == {"currency": currency, "count": 3, "total_amount": "0.3001"}
+
+
+def test_analytics_summary_reflects_new_transactions_without_mutating_store():
+    created = client.post("/transactions", json=SAMPLE_TX)
+    assert created.status_code == 201
+    transactions_before = client.get("/transactions").json()
+
+    first = client.get("/analytics/summary")
+    repeated = client.get("/analytics/summary")
+    assert first.status_code == repeated.status_code == 200
+    assert first.json() == repeated.json()
+    assert first.json()["total_transactions"] == 1
+    assert client.get("/transactions").json() == transactions_before
+
+    created = client.post("/transactions", json={**SAMPLE_TX, "amount": "200.00"})
+    assert created.status_code == 201
+    transactions_after = client.get("/transactions").json()
+
+    updated = client.get("/analytics/summary")
+    assert updated.status_code == 200
+    assert updated.json()["total_transactions"] == 2
+    assert updated.json()["total_volume_by_currency"][0] == {
+        "currency": "EUR",
+        "count": 2,
+        "total_amount": "325.50",
+    }
+    assert updated.json()["by_status"] == {"PENDING": 0, "COMPLETED": 2}
+    assert updated.json()["largest_transaction"] == created.json()
+    assert client.get("/transactions").json() == transactions_after
