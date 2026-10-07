@@ -6,7 +6,7 @@ State is held in memory so the service runs with no external dependencies.
 
 import logging
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, Context, Decimal, localcontext
 from enum import StrEnum
 from typing import Literal
 from uuid import uuid4
@@ -49,6 +49,19 @@ class Transaction(TransactionCreate):
     id: str
     status: TransactionStatus
     created_at: datetime
+
+
+class CurrencyStats(BaseModel):
+    currency: Currency
+    count: int
+    total_amount: Decimal
+
+
+class AnalyticsSummary(BaseModel):
+    total_transactions: int
+    total_volume_by_currency: list[CurrencyStats]
+    by_status: dict[TransactionStatus, int]
+    largest_transaction: Transaction | None = None
 
 
 class HealthResponse(BaseModel):
@@ -139,6 +152,24 @@ def simulate_incident(scenario: IncidentScenario) -> dict[str, str]:
     message = _INCIDENT_MESSAGES[scenario]
     log.error("incident.simulated", extra={"scenario": scenario, "detail": message})
     return {"scenario": scenario, "error": message}
+
+
+@app.get("/analytics/summary", response_model=AnalyticsSummary, tags=["analytics"])
+def analytics_summary() -> AnalyticsSummary:
+    transactions = sorted(_transactions.values(), key=lambda t: t.created_at)
+    by_currency = {c: [t.amount for t in transactions if t.currency == c] for c in Currency}
+    # Exact context: amounts are unbounded, so the default 28-digit precision would round sums.
+    with localcontext(Context(prec=MAX_PREC, Emax=MAX_EMAX, Emin=MIN_EMIN)):
+        volume = [
+            CurrencyStats(currency=c, count=len(amounts), total_amount=sum(amounts, Decimal(0)))
+            for c, amounts in by_currency.items()
+        ]
+    return AnalyticsSummary(
+        total_transactions=len(transactions),
+        total_volume_by_currency=volume,
+        by_status={s: sum(t.status == s for t in transactions) for s in TransactionStatus},
+        largest_transaction=max(transactions, key=lambda t: t.amount, default=None),
+    )
 
 
 @app.get("/transactions", response_model=list[Transaction], tags=["transactions"])
