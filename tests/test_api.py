@@ -238,3 +238,43 @@ def test_analytics_summary_currency_filter_with_no_matches():
 
 def test_analytics_summary_rejects_unknown_currency():
     assert client.get("/analytics/summary", params={"currency": "JPY"}).status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("amounts", "expected_average"),
+    [
+        (("0.01", "0.04"), "0.02"),
+        (("0.01", "0.02"), "0.02"),
+        (("0.10", "0.25"), "0.18"),
+    ],
+)
+def test_analytics_summary_average_rounds_half_even(amounts, expected_average):
+    for amount in amounts:
+        _insert_tx(amount, "EUR", TransactionStatus.COMPLETED)
+
+    eur = client.get("/analytics/summary").json()["by_currency"]["EUR"]
+    assert eur["average"] == expected_average
+
+
+def test_analytics_summary_average_has_at_least_two_decimal_places():
+    _insert_tx("10", "USD", TransactionStatus.COMPLETED)
+    _insert_tx("11", "USD", TransactionStatus.COMPLETED)
+
+    usd = client.get("/analytics/summary").json()["by_currency"]["USD"]
+    assert usd["total"] == "21"
+    assert usd["average"] == "10.50"
+
+
+def test_analytics_summary_currencies_are_sorted():
+    for currency in ("USD", "EUR", "GBP"):
+        client.post("/transactions", json={**SAMPLE_TX, "currency": currency})
+
+    body = client.get("/analytics/summary").json()
+    assert list(body["by_currency"]) == ["EUR", "GBP", "USD"]
+
+
+@pytest.mark.parametrize("currency", ["eur", ""])
+def test_analytics_summary_rejects_invalid_currency_values(currency):
+    response = client.get("/analytics/summary", params={"currency": currency})
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["query", "currency"]
