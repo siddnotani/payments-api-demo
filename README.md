@@ -16,6 +16,7 @@ real payments system.
 | GET    | `/ops/jobs`                 | Jobs registered on the in-app scheduler |
 | POST   | `/ops/jobs/{name}/run`      | Run a job (`dry_run=true` by default)  |
 | POST   | `/ops/incidents/{scenario}` | Simulate an incident (always 500)      |
+| GET    | `/analytics/summary`        | Count/total/min/max/average per currency + count per status (`?currency=EUR` to filter) |
 
 Transactions are stored in an in-memory dict, so state resets on restart and
 no database is required.
@@ -36,6 +37,15 @@ Example:
 curl -X POST http://127.0.0.1:8000/transactions \
   -H 'Content-Type: application/json' \
   -d '{"from_account":"ES9121000418450200051332","to_account":"GB29NWBK60161331926819","amount":"125.50","currency":"EUR","reference":"Invoice 42"}'
+```
+
+Analytics summary (read-only aggregates over the in-memory store; averages are
+rounded half-even to the larger of 2 decimal places or the inputs' scale):
+
+```bash
+curl 'http://127.0.0.1:8000/analytics/summary?currency=EUR'
+# {"total_transactions":1,"by_currency":{"EUR":{"count":1,"total":"125.50","min":"125.50",
+#  "max":"125.50","average":"125.50"}},"by_status":{"PENDING":0,"COMPLETED":1}}
 ```
 
 ## Quality checks

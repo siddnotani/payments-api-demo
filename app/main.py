@@ -6,8 +6,9 @@ State is held in memory so the service runs with no external dependencies.
 
 import logging
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, Context, Decimal, localcontext
 from enum import StrEnum
+from fractions import Fraction
 from typing import Literal
 from uuid import uuid4
 
@@ -56,6 +57,20 @@ class HealthResponse(BaseModel):
     transactions: int
 
 
+class CurrencySummary(BaseModel):
+    count: int
+    total: Decimal
+    min: Decimal
+    max: Decimal
+    average: Decimal
+
+
+class AnalyticsSummary(BaseModel):
+    total_transactions: int
+    by_currency: dict[str, CurrencySummary]
+    by_status: dict[str, int]
+
+
 class JobInfo(BaseModel):
     name: str
     schedule: str
@@ -78,6 +93,9 @@ _INCIDENT_MESSAGES: dict[str, str] = {
 
 
 _transactions: dict[str, Transaction] = {}
+
+# Amounts are unbounded, so aggregate without the default 28-digit precision.
+_EXACT = Context(prec=MAX_PREC, Emax=MAX_EMAX, Emin=MIN_EMIN)
 
 
 def reset_store() -> None:
@@ -139,6 +157,36 @@ def simulate_incident(scenario: IncidentScenario) -> dict[str, str]:
     message = _INCIDENT_MESSAGES[scenario]
     log.error("incident.simulated", extra={"scenario": scenario, "detail": message})
     return {"scenario": scenario, "error": message}
+
+
+def _summarize_currency(amounts: list[Decimal]) -> CurrencySummary:
+    with localcontext(_EXACT):
+        total = sum(amounts, Decimal(0))
+    places = max(2, *(-a.as_tuple().exponent for a in amounts))
+    scaled_average = round(Fraction(total) * 10**places / len(amounts))
+    return CurrencySummary(
+        count=len(amounts),
+        total=total,
+        min=min(amounts),
+        max=max(amounts),
+        average=Decimal(scaled_average).scaleb(-places, context=_EXACT),
+    )
+
+
+@app.get("/analytics/summary", response_model=AnalyticsSummary, tags=["analytics"])
+def analytics_summary(currency: Currency | None = None) -> AnalyticsSummary:
+    """Aggregate stored transactions by currency and status, optionally for one currency."""
+    txs = [t for t in _transactions.values() if currency is None or t.currency == currency]
+    amounts_by_currency: dict[str, list[Decimal]] = {}
+    by_status = {s.value: 0 for s in TransactionStatus}
+    for tx in txs:
+        amounts_by_currency.setdefault(tx.currency.value, []).append(tx.amount)
+        by_status[tx.status.value] += 1
+    return AnalyticsSummary(
+        total_transactions=len(txs),
+        by_currency={c: _summarize_currency(a) for c, a in sorted(amounts_by_currency.items())},
+        by_status=by_status,
+    )
 
 
 @app.get("/transactions", response_model=list[Transaction], tags=["transactions"])

@@ -1,7 +1,10 @@
+from datetime import UTC, datetime
+from uuid import uuid4
+
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app, reset_store
+from app.main import Transaction, TransactionStatus, _transactions, app, reset_store
 from app.scheduler import JobResult, job
 
 client = TestClient(app)
@@ -144,3 +147,94 @@ def test_simulated_incident_all_scenarios(scenario, fragment):
 def test_simulated_incident_rejects_unknown_scenario():
     response = client.post("/ops/incidents/meteor_strike")
     assert response.status_code == 422
+
+
+def _insert_tx(amount: str, currency: str, tx_status: TransactionStatus) -> None:
+    tx = Transaction(
+        id=str(uuid4()),
+        status=tx_status,
+        created_at=datetime.now(UTC),
+        **{**SAMPLE_TX, "amount": amount, "currency": currency},
+    )
+    _transactions[tx.id] = tx
+
+
+def test_analytics_summary_empty_store():
+    response = client.get("/analytics/summary")
+    assert response.status_code == 200
+    assert response.json() == {
+        "total_transactions": 0,
+        "by_currency": {},
+        "by_status": {"PENDING": 0, "COMPLETED": 0},
+    }
+
+
+def test_analytics_summary_multiple_currencies_and_statuses():
+    _insert_tx("10.00", "EUR", TransactionStatus.COMPLETED)
+    _insert_tx("30.00", "EUR", TransactionStatus.PENDING)
+    _insert_tx("5.25", "USD", TransactionStatus.COMPLETED)
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "20.00", "currency": "GBP"})
+
+    body = client.get("/analytics/summary").json()
+    assert body["total_transactions"] == 4
+    assert body["by_status"] == {"PENDING": 1, "COMPLETED": 3}
+    assert body["by_currency"] == {
+        "EUR": {"count": 2, "total": "40.00", "min": "10.00", "max": "30.00", "average": "20.00"},
+        "GBP": {"count": 1, "total": "20.00", "min": "20.00", "max": "20.00", "average": "20.00"},
+        "USD": {"count": 1, "total": "5.25", "min": "5.25", "max": "5.25", "average": "5.25"},
+    }
+
+
+def test_analytics_summary_average_rounds_non_terminating_division():
+    for amount in ("10.00", "10.00", "11.00"):
+        _insert_tx(amount, "EUR", TransactionStatus.COMPLETED)
+
+    eur = client.get("/analytics/summary").json()["by_currency"]["EUR"]
+    assert eur["total"] == "31.00"
+    assert eur["average"] == "10.33"
+
+
+def test_analytics_summary_average_keeps_input_precision():
+    _insert_tx("0.001", "USD", TransactionStatus.COMPLETED)
+    _insert_tx("0.002", "USD", TransactionStatus.COMPLETED)
+
+    usd = client.get("/analytics/summary").json()["by_currency"]["USD"]
+    assert usd["total"] == "0.003"
+    assert usd["average"] == "0.002"
+
+
+def test_analytics_summary_large_amounts_are_exact():
+    big = "1" + "0" * 40 + ".01"
+    _insert_tx(big, "EUR", TransactionStatus.COMPLETED)
+    _insert_tx(big, "EUR", TransactionStatus.COMPLETED)
+
+    eur = client.get("/analytics/summary").json()["by_currency"]["EUR"]
+    assert eur["total"] == "2" + "0" * 40 + ".02"
+    assert eur["average"] == big
+
+
+def test_analytics_summary_currency_filter():
+    _insert_tx("10.00", "EUR", TransactionStatus.COMPLETED)
+    _insert_tx("20.00", "EUR", TransactionStatus.PENDING)
+    _insert_tx("99.99", "USD", TransactionStatus.COMPLETED)
+
+    body = client.get("/analytics/summary", params={"currency": "EUR"}).json()
+    assert body["total_transactions"] == 2
+    assert list(body["by_currency"]) == ["EUR"]
+    assert body["by_currency"]["EUR"]["average"] == "15.00"
+    assert body["by_status"] == {"PENDING": 1, "COMPLETED": 1}
+
+
+def test_analytics_summary_currency_filter_with_no_matches():
+    _insert_tx("10.00", "EUR", TransactionStatus.COMPLETED)
+
+    body = client.get("/analytics/summary", params={"currency": "GBP"}).json()
+    assert body == {
+        "total_transactions": 0,
+        "by_currency": {},
+        "by_status": {"PENDING": 0, "COMPLETED": 0},
+    }
+
+
+def test_analytics_summary_rejects_unknown_currency():
+    assert client.get("/analytics/summary", params={"currency": "JPY"}).status_code == 422
