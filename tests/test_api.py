@@ -1,7 +1,10 @@
+from datetime import UTC, datetime
+
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app, reset_store
+import app.main as main
+from app.main import Transaction, TransactionStatus, app, reset_store
 from app.scheduler import JobResult, job
 
 client = TestClient(app)
@@ -144,3 +147,102 @@ def test_simulated_incident_all_scenarios(scenario, fragment):
 def test_simulated_incident_rejects_unknown_scenario():
     response = client.post("/ops/incidents/meteor_strike")
     assert response.status_code == 422
+
+
+def test_analytics_summary_empty_store():
+    response = client.get("/analytics/summary")
+    assert response.status_code == 200
+    assert response.json() == {
+        "total_transactions": 0,
+        "total_amount_by_currency": {},
+        "count_by_currency": {},
+        "count_by_status": {},
+        "average_amount": None,
+        "largest_transaction": None,
+    }
+
+
+def test_analytics_summary_aggregates_transactions():
+    client.post("/transactions", json=SAMPLE_TX)
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "10.00"})
+    largest = client.post(
+        "/transactions", json={**SAMPLE_TX, "amount": "300.25", "currency": "USD"}
+    ).json()
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "5", "currency": "GBP"})
+
+    response = client.get("/analytics/summary")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_transactions"] == 4
+    assert body["total_amount_by_currency"] == {"EUR": "135.50", "USD": "300.25", "GBP": "5"}
+    assert body["count_by_currency"] == {"EUR": 2, "USD": 1, "GBP": 1}
+    assert body["count_by_status"] == {"COMPLETED": 4}
+    assert body["average_amount"] == "110.19"
+    assert body["largest_transaction"] == largest
+
+
+def test_analytics_summary_counts_pending_status():
+    client.post("/transactions", json=SAMPLE_TX)
+    pending = Transaction(
+        id="pending-1",
+        status=TransactionStatus.PENDING,
+        created_at=datetime.now(UTC),
+        **{**SAMPLE_TX, "amount": "1.00"},
+    )
+    main._transactions[pending.id] = pending
+
+    body = client.get("/analytics/summary").json()
+    assert body["count_by_status"] == {"COMPLETED": 1, "PENDING": 1}
+    assert body["total_amount_by_currency"] == {"EUR": "126.50"}
+
+
+def test_analytics_summary_large_amounts_are_exact():
+    big = "123456789012345678901234567890.01"
+    client.post("/transactions", json={**SAMPLE_TX, "amount": big})
+    client.post("/transactions", json={**SAMPLE_TX, "amount": big})
+
+    body = client.get("/analytics/summary").json()
+    assert body["total_amount_by_currency"] == {"EUR": "246913578024691357802469135780.02"}
+    assert body["average_amount"] == big
+
+
+@pytest.mark.parametrize(
+    ("amount", "expected_average"),
+    [("0.125", "0.12"), ("0.135", "0.14"), ("5", "5.00")],
+)
+def test_analytics_summary_average_rounds_half_even_to_2dp(amount, expected_average):
+    client.post("/transactions", json={**SAMPLE_TX, "amount": amount})
+
+    body = client.get("/analytics/summary").json()
+    assert body["average_amount"] == expected_average
+
+
+def test_analytics_summary_totals_keep_sub_cent_precision():
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "0.001"})
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "0.002"})
+
+    body = client.get("/analytics/summary").json()
+    assert body["total_amount_by_currency"] == {"EUR": "0.003"}
+    assert body["average_amount"] == "0.00"
+
+
+def test_analytics_summary_excludes_rejected_transactions():
+    client.post("/transactions", json=SAMPLE_TX)
+    rejected = client.post("/transactions", json={**SAMPLE_TX, "amount": "0"})
+    assert rejected.status_code == 422
+
+    body = client.get("/analytics/summary").json()
+    assert body["total_transactions"] == 1
+    assert body["total_amount_by_currency"] == {"EUR": "125.50"}
+
+
+def test_analytics_summary_largest_tie_returns_first_created():
+    first = client.post("/transactions", json={**SAMPLE_TX, "amount": "50"}).json()
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "50.00", "currency": "USD"})
+
+    body = client.get("/analytics/summary").json()
+    assert body["largest_transaction"]["id"] == first["id"]
+
+
+def test_analytics_summary_rejects_post():
+    assert client.post("/analytics/summary").status_code == 405
