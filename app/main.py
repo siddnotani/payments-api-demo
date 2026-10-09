@@ -6,8 +6,9 @@ State is held in memory so the service runs with no external dependencies.
 
 import logging
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, Context, Decimal
 from enum import StrEnum
+from fractions import Fraction
 from typing import Literal
 from uuid import uuid4
 
@@ -51,6 +52,20 @@ class Transaction(TransactionCreate):
     created_at: datetime
 
 
+class CurrencySummary(BaseModel):
+    count: int
+    total_amount: Decimal
+
+
+class AnalyticsSummary(BaseModel):
+    total_transactions: int
+    total_amount_by_currency: dict[Currency, Decimal]
+    count_by_currency: dict[Currency, int]
+    count_by_status: dict[TransactionStatus, int]
+    average_amount: Decimal | None
+    largest_transaction: Transaction | None
+
+
 class HealthResponse(BaseModel):
     status: Literal["ok"]
     transactions: int
@@ -78,6 +93,9 @@ _INCIDENT_MESSAGES: dict[str, str] = {
 
 
 _transactions: dict[str, Transaction] = {}
+
+# Amounts are unbounded, so aggregate without the default 28-digit precision limit.
+_EXACT = Context(prec=MAX_PREC, Emax=MAX_EMAX, Emin=MIN_EMIN)
 
 
 def reset_store() -> None:
@@ -155,3 +173,35 @@ def get_transaction(transaction_id: str) -> Transaction:
             detail=f"Transaction {transaction_id} not found",
         )
     return tx
+
+
+@app.get("/analytics/summary", response_model=AnalyticsSummary, tags=["analytics"])
+def analytics_summary() -> AnalyticsSummary:
+    """Aggregate all stored transactions.
+
+    `average_amount` is the mean of every amount regardless of currency, rounded
+    half-even to 2 dp. Mixing currencies without FX conversion makes it imprecise;
+    use `total_amount_by_currency` / `count_by_currency` for per-currency figures.
+    """
+    txs = list(_transactions.values())
+    totals: dict[Currency, Decimal] = {}
+    counts: dict[Currency, int] = {}
+    statuses: dict[TransactionStatus, int] = {}
+    for tx in txs:
+        totals[tx.currency] = _EXACT.add(totals.get(tx.currency, Decimal(0)), tx.amount)
+        counts[tx.currency] = counts.get(tx.currency, 0) + 1
+        statuses[tx.status] = statuses.get(tx.status, 0) + 1
+
+    average = None
+    if txs:
+        cents = round(sum(Fraction(tx.amount) for tx in txs) * 100 / len(txs))
+        average = Decimal(cents).scaleb(-2, _EXACT)
+
+    return AnalyticsSummary(
+        total_transactions=len(txs),
+        total_amount_by_currency=totals,
+        count_by_currency=counts,
+        count_by_status=statuses,
+        average_amount=average,
+        largest_transaction=max(txs, key=lambda t: t.amount, default=None),
+    )
