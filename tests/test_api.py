@@ -204,3 +204,45 @@ def test_analytics_summary_large_amounts_are_exact():
     body = client.get("/analytics/summary").json()
     assert body["total_amount_by_currency"] == {"EUR": "246913578024691357802469135780.02"}
     assert body["average_amount"] == big
+
+
+@pytest.mark.parametrize(
+    ("amount", "expected_average"),
+    [("0.125", "0.12"), ("0.135", "0.14"), ("5", "5.00")],
+)
+def test_analytics_summary_average_rounds_half_even_to_2dp(amount, expected_average):
+    client.post("/transactions", json={**SAMPLE_TX, "amount": amount})
+
+    body = client.get("/analytics/summary").json()
+    assert body["average_amount"] == expected_average
+
+
+def test_analytics_summary_totals_keep_sub_cent_precision():
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "0.001"})
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "0.002"})
+
+    body = client.get("/analytics/summary").json()
+    assert body["total_amount_by_currency"] == {"EUR": "0.003"}
+    assert body["average_amount"] == "0.00"
+
+
+def test_analytics_summary_excludes_rejected_transactions():
+    client.post("/transactions", json=SAMPLE_TX)
+    rejected = client.post("/transactions", json={**SAMPLE_TX, "amount": "0"})
+    assert rejected.status_code == 422
+
+    body = client.get("/analytics/summary").json()
+    assert body["total_transactions"] == 1
+    assert body["total_amount_by_currency"] == {"EUR": "125.50"}
+
+
+def test_analytics_summary_largest_tie_returns_first_created():
+    first = client.post("/transactions", json={**SAMPLE_TX, "amount": "50"}).json()
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "50.00", "currency": "USD"})
+
+    body = client.get("/analytics/summary").json()
+    assert body["largest_transaction"]["id"] == first["id"]
+
+
+def test_analytics_summary_rejects_post():
+    assert client.post("/analytics/summary").status_code == 405
