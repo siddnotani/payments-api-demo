@@ -261,3 +261,84 @@ def test_analytics_summary_filters():
 )
 def test_analytics_summary_rejects_invalid_params(params):
     assert client.get("/analytics/summary", params=params).status_code == 422
+
+
+def test_analytics_summary_since_equal_until_is_inclusive_instant():
+    _insert_tx("exact", "7", Currency.EUR, datetime(2026, 2, 1, tzinfo=UTC))
+    _insert_tx("after", "9", Currency.EUR, datetime(2026, 2, 1, 0, 0, 1, tzinfo=UTC))
+
+    response = client.get(
+        "/analytics/summary",
+        params={"since": "2026-02-01T00:00:00Z", "until": "2026-02-01T00:00:00Z"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_transactions"] == 1
+    assert body["largest_transaction"]["id"] == "exact"
+
+
+def test_analytics_summary_until_only_naive_treated_as_utc():
+    _insert_tx("jan", "10", Currency.EUR, datetime(2026, 1, 1, tzinfo=UTC))
+    _insert_tx("feb", "20", Currency.EUR, datetime(2026, 2, 1, tzinfo=UTC))
+
+    response = client.get("/analytics/summary", params={"until": "2026-01-01T00:00:00"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_transactions"] == 1
+    assert body["last_transaction_at"] == "2026-01-01T00:00:00Z"
+
+
+def test_analytics_summary_normalises_offset_datetimes():
+    _insert_tx("feb", "20", Currency.EUR, datetime(2026, 2, 1, tzinfo=UTC))
+
+    def total(**params):
+        return client.get("/analytics/summary", params=params).json()["total_transactions"]
+
+    assert total(since="2026-02-01T01:00:00+01:00") == 1
+    assert total(since="2026-02-01T00:00:01+00:00") == 0
+    assert total(until="2026-01-31T23:00:00-01:00") == 1
+    assert total(until="2026-01-31T22:59:59-01:00") == 0
+
+
+def test_analytics_summary_combined_filters_and_exact_account_match():
+    _insert_tx("a", "10", Currency.EUR, datetime(2026, 1, 1, tzinfo=UTC), from_account="ACC-X")
+    _insert_tx("b", "30", Currency.EUR, datetime(2026, 2, 1, tzinfo=UTC), to_account="ACC-X")
+    _insert_tx("c", "99", Currency.USD, datetime(2026, 2, 1, tzinfo=UTC), from_account="ACC-X")
+    _insert_tx("d", "50", Currency.EUR, datetime(2026, 3, 1, tzinfo=UTC), from_account="ACC-X")
+    _insert_tx("e", "70", Currency.EUR, datetime(2026, 2, 1, tzinfo=UTC))
+
+    response = client.get(
+        "/analytics/summary",
+        params={"currency": "EUR", "account": "ACC-X", "until": "2026-02-28T00:00:00Z"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_transactions"] == 2
+    assert body["total_amount_by_currency"] == {"EUR": "40", "GBP": "0", "USD": "0"}
+    assert body["average_amount"] == "20.00"
+    assert body["largest_transaction"]["id"] == "b"
+
+    partial = client.get("/analytics/summary", params={"account": "ACC"}).json()
+    assert partial["total_transactions"] == 0
+
+
+def test_analytics_summary_since_after_until_detail_compares_naive_as_utc():
+    response = client.get(
+        "/analytics/summary",
+        params={"since": "2026-01-01T00:00:01", "until": "2026-01-01T00:00:00Z"},
+    )
+    assert response.status_code == 422
+    assert response.json() == {"detail": "since must not be after until"}
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"until": "not-a-date"},
+        {"currency": "eur"},
+    ],
+)
+def test_analytics_summary_rejects_more_invalid_params(params):
+    response = client.get("/analytics/summary", params=params)
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["query", next(iter(params))]
