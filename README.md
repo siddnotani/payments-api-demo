@@ -16,6 +16,7 @@ real payments system.
 | GET    | `/ops/jobs`                 | Jobs registered on the in-app scheduler |
 | POST   | `/ops/jobs/{name}/run`      | Run a job (`dry_run=true` by default)  |
 | POST   | `/ops/incidents/{scenario}` | Simulate an incident (always 500)      |
+| GET    | `/analytics/summary`        | Totals, counts, average, largest and first/last timestamps; optional `currency`, `since`, `until`, `account` filters |
 
 Transactions are stored in an in-memory dict, so state resets on restart and
 no database is required.

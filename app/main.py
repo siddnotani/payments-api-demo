@@ -6,12 +6,13 @@ State is held in memory so the service runs with no external dependencies.
 
 import logging
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, Context, Decimal
 from enum import StrEnum
-from typing import Literal
+from fractions import Fraction
+from typing import Annotated, Literal
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 import app.jobs  # noqa: F401  (registers in-app jobs)
@@ -51,6 +52,17 @@ class Transaction(TransactionCreate):
     created_at: datetime
 
 
+class AnalyticsSummary(BaseModel):
+    total_transactions: int
+    total_amount_by_currency: dict[Currency, Decimal]
+    count_by_status: dict[TransactionStatus, int]
+    count_by_currency: dict[Currency, int]
+    average_amount: Decimal | None
+    largest_transaction: Transaction | None
+    first_transaction_at: datetime | None
+    last_transaction_at: datetime | None
+
+
 class HealthResponse(BaseModel):
     status: Literal["ok"]
     transactions: int
@@ -83,6 +95,66 @@ _transactions: dict[str, Transaction] = {}
 def reset_store() -> None:
     """Clear all stored transactions (used by tests)."""
     _transactions.clear()
+
+
+# Unbounded precision so sums of arbitrarily large accepted amounts stay exact.
+_EXACT = Context(prec=MAX_PREC, Emax=MAX_EMAX, Emin=MIN_EMIN)
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=UTC)
+
+
+def _average_to_cents(total: Decimal, count: int) -> Decimal:
+    """Exact mean rounded half-even to 2 dp (Fraction avoids Decimal precision limits)."""
+    cents = round(Fraction(total) * 100 / count)
+    return Decimal(cents).scaleb(-2, _EXACT)
+
+
+def compute_analytics(
+    transactions: list[Transaction],
+    currency: Currency | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    account: str | None = None,
+) -> AnalyticsSummary:
+    """Aggregate transactions with exact Decimal math; `since`/`until` are inclusive."""
+    since, until = _as_utc(since), _as_utc(until)
+    selected = sorted(
+        (
+            tx
+            for tx in transactions
+            if (currency is None or tx.currency == currency)
+            and (since is None or tx.created_at >= since)
+            and (until is None or tx.created_at <= until)
+            and (account is None or account in (tx.from_account, tx.to_account))
+        ),
+        key=lambda t: t.created_at,
+    )
+
+    total_by_currency = {c: Decimal(0) for c in Currency}
+    count_by_currency = {c: 0 for c in Currency}
+    count_by_status = {s: 0 for s in TransactionStatus}
+    grand_total = Decimal(0)
+    for tx in selected:
+        total_by_currency[tx.currency] = _EXACT.add(total_by_currency[tx.currency], tx.amount)
+        grand_total = _EXACT.add(grand_total, tx.amount)
+        count_by_currency[tx.currency] += 1
+        count_by_status[tx.status] += 1
+
+    return AnalyticsSummary(
+        total_transactions=len(selected),
+        total_amount_by_currency=total_by_currency,
+        count_by_status=count_by_status,
+        count_by_currency=count_by_currency,
+        average_amount=_average_to_cents(grand_total, len(selected)) if selected else None,
+        # max() keeps the first maximum, so ties resolve to the earliest transaction.
+        largest_transaction=max(selected, key=lambda t: t.amount, default=None),
+        first_transaction_at=selected[0].created_at if selected else None,
+        last_transaction_at=selected[-1].created_at if selected else None,
+    )
 
 
 @app.get("/health", response_model=HealthResponse, tags=["ops"])
@@ -139,6 +211,19 @@ def simulate_incident(scenario: IncidentScenario) -> dict[str, str]:
     message = _INCIDENT_MESSAGES[scenario]
     log.error("incident.simulated", extra={"scenario": scenario, "detail": message})
     return {"scenario": scenario, "error": message}
+
+
+@app.get("/analytics/summary", response_model=AnalyticsSummary, tags=["analytics"])
+def analytics_summary(
+    currency: Currency | None = None,
+    since: Annotated[datetime | None, Query(description="Inclusive ISO 8601 lower bound")] = None,
+    until: Annotated[datetime | None, Query(description="Inclusive ISO 8601 upper bound")] = None,
+    account: Annotated[str | None, Query(min_length=1, description="from or to account")] = None,
+) -> AnalyticsSummary:
+    """Aggregate the transaction store; naive datetimes are treated as UTC."""
+    if since is not None and until is not None and _as_utc(since) > _as_utc(until):
+        raise HTTPException(status_code=422, detail="since must not be after until")
+    return compute_analytics(list(_transactions.values()), currency, since, until, account)
 
 
 @app.get("/transactions", response_model=list[Transaction], tags=["transactions"])
