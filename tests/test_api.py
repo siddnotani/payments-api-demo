@@ -195,3 +195,44 @@ def test_analytics_sums_large_amounts_exactly():
         "count": 2,
         "total_amount": "12345678901234567890123456789.02",
     }
+
+
+def test_analytics_omits_unused_currencies_and_zero_fills_statuses():
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "7.25", "currency": "GBP"})
+
+    response = client.get("/analytics")
+    assert response.status_code == 200
+    assert response.json() == {
+        "total_transactions": 1,
+        "by_currency": [{"currency": "GBP", "count": 1, "total_amount": "7.25"}],
+        "by_status": {"PENDING": 0, "COMPLETED": 1},
+    }
+
+
+def test_analytics_ignores_rejected_transactions():
+    client.post("/transactions", json=SAMPLE_TX)
+    assert client.post("/transactions", json={**SAMPLE_TX, "amount": "0"}).status_code == 422
+    same_account = {**SAMPLE_TX, "to_account": SAMPLE_TX["from_account"]}
+    assert client.post("/transactions", json=same_account).status_code == 422
+
+    body = client.get("/analytics").json()
+    assert body["total_transactions"] == 1
+    assert body["by_currency"] == [{"currency": "EUR", "count": 1, "total_amount": "125.50"}]
+    assert body["by_status"] == {"PENDING": 0, "COMPLETED": 1}
+
+
+def test_analytics_sums_mixed_scale_amounts():
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "10"})
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "0.5"})
+
+    eur = client.get("/analytics").json()["by_currency"][0]
+    assert eur["total_amount"] == "10.5"
+
+
+def test_analytics_sums_tiny_amounts_below_default_exponent_range():
+    tiny = "1E-1000030"
+    client.post("/transactions", json={**SAMPLE_TX, "amount": tiny})
+    client.post("/transactions", json={**SAMPLE_TX, "amount": tiny})
+
+    eur = client.get("/analytics").json()["by_currency"][0]
+    assert Decimal(eur["total_amount"]) == Decimal("2E-1000030")
