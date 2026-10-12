@@ -6,7 +6,7 @@ State is held in memory so the service runs with no external dependencies.
 
 import logging
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, Context, Decimal
 from enum import StrEnum
 from typing import Literal
 from uuid import uuid4
@@ -68,6 +68,22 @@ class JobRunResponse(BaseModel):
     notes: list[str]
 
 
+class CurrencyBreakdown(BaseModel):
+    currency: Currency
+    count: int
+    total_amount: Decimal
+
+
+class AnalyticsSummary(BaseModel):
+    total_transactions: int
+    by_currency: list[CurrencyBreakdown]
+    by_status: dict[str, int]
+
+
+# Amounts are unbounded, so sum exactly instead of rounding at the default 28 digits.
+_EXACT = Context(prec=MAX_PREC, Emax=MAX_EMAX, Emin=MIN_EMIN)
+
+
 IncidentScenario = Literal["fx_timeout", "ledger_drift", "duplicate_settlement"]
 
 _INCIDENT_MESSAGES: dict[str, str] = {
@@ -110,6 +126,26 @@ def create_transaction(payload: TransactionCreate) -> Transaction:
     )
     _transactions[tx.id] = tx
     return tx
+
+
+@app.get("/analytics", response_model=AnalyticsSummary, tags=["analytics"])
+def analytics() -> AnalyticsSummary:
+    counts: dict[Currency, int] = {}
+    totals: dict[Currency, Decimal] = {}
+    by_status = {s.value: 0 for s in TransactionStatus}
+    for tx in _transactions.values():
+        counts[tx.currency] = counts.get(tx.currency, 0) + 1
+        totals[tx.currency] = _EXACT.add(totals.get(tx.currency, Decimal(0)), tx.amount)
+        by_status[tx.status.value] += 1
+    return AnalyticsSummary(
+        total_transactions=len(_transactions),
+        by_currency=[
+            CurrencyBreakdown(currency=c, count=counts[c], total_amount=totals[c])
+            for c in Currency
+            if c in counts
+        ],
+        by_status=by_status,
+    )
 
 
 @app.get("/ops/jobs", response_model=list[JobInfo], tags=["ops"])

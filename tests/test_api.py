@@ -1,7 +1,10 @@
+from datetime import UTC, datetime
+from decimal import Decimal
+
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app, reset_store
+from app.main import Transaction, TransactionStatus, _transactions, app, reset_store
 from app.scheduler import JobResult, job
 
 client = TestClient(app)
@@ -144,3 +147,51 @@ def test_simulated_incident_all_scenarios(scenario, fragment):
 def test_simulated_incident_rejects_unknown_scenario():
     response = client.post("/ops/incidents/meteor_strike")
     assert response.status_code == 422
+
+
+def test_analytics_empty_store():
+    response = client.get("/analytics")
+    assert response.status_code == 200
+    assert response.json() == {
+        "total_transactions": 0,
+        "by_currency": [],
+        "by_status": {"PENDING": 0, "COMPLETED": 0},
+    }
+
+
+def test_analytics_groups_by_currency_and_status():
+    client.post("/transactions", json=SAMPLE_TX)
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "10.25"})
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "99.99", "currency": "GBP"})
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "0.01", "currency": "USD"})
+    pending = Transaction(
+        id="pending-1",
+        status=TransactionStatus.PENDING,
+        created_at=datetime.now(UTC),
+        **{**SAMPLE_TX, "amount": Decimal("5.00"), "currency": "USD"},
+    )
+    _transactions[pending.id] = pending
+
+    response = client.get("/analytics")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_transactions"] == 5
+    assert body["by_currency"] == [
+        {"currency": "EUR", "count": 2, "total_amount": "135.75"},
+        {"currency": "GBP", "count": 1, "total_amount": "99.99"},
+        {"currency": "USD", "count": 2, "total_amount": "5.01"},
+    ]
+    assert body["by_status"] == {"PENDING": 1, "COMPLETED": 4}
+
+
+def test_analytics_sums_large_amounts_exactly():
+    big = "12345678901234567890123456789.01"
+    client.post("/transactions", json={**SAMPLE_TX, "amount": big})
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "0.01"})
+
+    eur = client.get("/analytics").json()["by_currency"][0]
+    assert eur == {
+        "currency": "EUR",
+        "count": 2,
+        "total_amount": "12345678901234567890123456789.02",
+    }
