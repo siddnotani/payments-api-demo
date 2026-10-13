@@ -1,3 +1,7 @@
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -222,3 +226,62 @@ def test_analytics_summary_handles_large_amounts():
     assert eur["total_amount"] == "1" + "0" * 40 + ".00"
     assert eur["average_amount"] == "5" + "0" * 39 + ".00"
     assert body["largest_transaction"]["amount"] == big
+
+
+def test_analytics_summary_rounds_half_up():
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "0.125"})
+    body = client.get("/analytics/summary").json()
+    assert body["per_currency"][0]["total_amount"] == "0.13"
+    assert body["per_currency"][0]["average_amount"] == "0.13"
+
+    reset_store()
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "0.01"})
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "0.04"})
+    eur = client.get("/analytics/summary").json()["per_currency"][0]
+    assert eur["total_amount"] == "0.05"
+    assert eur["average_amount"] == "0.03"
+
+
+def test_analytics_summary_sums_sub_cent_amounts_before_rounding():
+    for _ in range(3):
+        client.post("/transactions", json={**SAMPLE_TX, "amount": "0.005"})
+    eur = client.get("/analytics/summary").json()["per_currency"][0]
+    assert eur == {"currency": "EUR", "count": 3, "total_amount": "0.02", "average_amount": "0.01"}
+
+
+def test_analytics_summary_account_filter_requires_exact_match():
+    client.post("/transactions", json={**SAMPLE_TX, "from_account": "ACC-A", "to_account": "ACC-B"})
+    for account in ["ACC", "acc-a", "ACC-A "]:
+        body = client.get("/analytics/summary", params={"account": account}).json()
+        assert body["total_transactions"] == 0, account
+
+
+def test_analytics_summary_largest_transaction_matches_stored_record():
+    created = client.post("/transactions", json=SAMPLE_TX).json()
+    largest = client.get("/analytics/summary").json()["largest_transaction"]
+    assert largest == created
+    assert largest == client.get(f"/transactions/{created['id']}").json()
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="Decimal(int) in _round_cents is quadratic: amount '1E+1000000' stalls the summary ~15s",
+)
+def test_analytics_summary_large_exponent_amount_is_bounded():
+    script = (
+        "from fastapi.testclient import TestClient\n"
+        "from app.main import app\n"
+        "c = TestClient(app)\n"
+        "tx = {'from_account': 'A', 'to_account': 'B', 'amount': '1E+1000000'}\n"
+        "assert c.post('/transactions', json=tx).status_code == 201\n"
+        "assert c.get('/analytics/summary').status_code == 200\n"
+    )
+    try:
+        subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=Path(__file__).resolve().parents[1],
+            check=True,
+            timeout=5,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("GET /analytics/summary did not finish within 5s")
