@@ -5,13 +5,16 @@ State is held in memory so the service runs with no external dependencies.
 """
 
 import logging
+import math
+from collections import defaultdict
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, Context, Decimal
 from enum import StrEnum
-from typing import Literal
+from fractions import Fraction
+from typing import Annotated, Literal
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 import app.jobs  # noqa: F401  (registers in-app jobs)
@@ -68,6 +71,19 @@ class JobRunResponse(BaseModel):
     notes: list[str]
 
 
+class CurrencySummary(BaseModel):
+    currency: Currency = Field(..., examples=["EUR"])
+    count: int = Field(..., ge=0, examples=[3])
+    total_amount: Decimal = Field(..., examples=["376.50"])
+    average_amount: Decimal = Field(..., examples=["125.50"])
+
+
+class AnalyticsSummary(BaseModel):
+    total_transactions: int = Field(..., ge=0, examples=[5])
+    per_currency: list[CurrencySummary]
+    largest_transaction: Transaction | None
+
+
 IncidentScenario = Literal["fx_timeout", "ledger_drift", "duplicate_settlement"]
 
 _INCIDENT_MESSAGES: dict[str, str] = {
@@ -78,6 +94,15 @@ _INCIDENT_MESSAGES: dict[str, str] = {
 
 
 _transactions: dict[str, Transaction] = {}
+
+# Amounts are unbounded, so aggregate exactly rather than in the default 28-digit context.
+_EXACT = Context(prec=MAX_PREC, Emax=MAX_EMAX, Emin=MIN_EMIN)
+
+
+def _round_cents(value: Fraction) -> Decimal:
+    """Round a non-negative exact value to 2 places, half up."""
+    cents = math.floor(value * 100 + Fraction(1, 2))
+    return Decimal(cents).scaleb(-2, context=_EXACT)
 
 
 def reset_store() -> None:
@@ -155,3 +180,38 @@ def get_transaction(transaction_id: str) -> Transaction:
             detail=f"Transaction {transaction_id} not found",
         )
     return tx
+
+
+@app.get("/analytics/summary", response_model=AnalyticsSummary, tags=["analytics"])
+def analytics_summary(
+    account: Annotated[
+        str | None,
+        Query(min_length=1, description="Only include transactions sent or received by account"),
+    ] = None,
+) -> AnalyticsSummary:
+    txs = sorted(_transactions.values(), key=lambda t: t.created_at)
+    if account is not None:
+        txs = [t for t in txs if account in (t.from_account, t.to_account)]
+
+    by_currency: dict[Currency, list[Decimal]] = defaultdict(list)
+    for tx in txs:
+        by_currency[tx.currency].append(tx.amount)
+
+    per_currency = []
+    for currency in sorted(by_currency):
+        amounts = by_currency[currency]
+        total = sum((Fraction(a) for a in amounts), Fraction(0))
+        per_currency.append(
+            CurrencySummary(
+                currency=currency,
+                count=len(amounts),
+                total_amount=_round_cents(total),
+                average_amount=_round_cents(total / len(amounts)),
+            )
+        )
+
+    return AnalyticsSummary(
+        total_transactions=len(txs),
+        per_currency=per_currency,
+        largest_transaction=max(txs, key=lambda t: t.amount, default=None),
+    )

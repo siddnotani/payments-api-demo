@@ -16,6 +16,13 @@ real payments system.
 | GET    | `/ops/jobs`                 | Jobs registered on the in-app scheduler |
 | POST   | `/ops/jobs/{name}/run`      | Run a job (`dry_run=true` by default)  |
 | POST   | `/ops/incidents/{scenario}` | Simulate an incident (always 500)      |
+| GET    | `/analytics/summary`        | Transaction totals per currency (optional `account` filter) |
+
+`GET /analytics/summary` returns the total transaction count, a per-currency
+breakdown (`count`, `total_amount`, `average_amount`, rounded to 2 places) and
+the `largest_transaction` by amount (`null` when there are none). Pass
+`?account=<id>` to only count transactions where that account is the sender or
+receiver.
 
 Transactions are stored in an in-memory dict, so state resets on restart and
 no database is required.
