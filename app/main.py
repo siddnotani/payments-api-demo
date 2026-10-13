@@ -5,12 +5,10 @@ State is held in memory so the service runs with no external dependencies.
 """
 
 import logging
-import math
 from collections import defaultdict
 from datetime import UTC, datetime
-from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, Context, Decimal
+from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, ROUND_HALF_UP, Context, Decimal
 from enum import StrEnum
-from fractions import Fraction
 from typing import Annotated, Literal
 from uuid import uuid4
 
@@ -97,12 +95,19 @@ _transactions: dict[str, Transaction] = {}
 
 # Amounts are unbounded, so aggregate exactly rather than in the default 28-digit context.
 _EXACT = Context(prec=MAX_PREC, Emax=MAX_EMAX, Emin=MIN_EMIN)
+_CENTS = Decimal("0.01")
 
 
-def _round_cents(value: Fraction) -> Decimal:
-    """Round a non-negative exact value to 2 places, half up."""
-    cents = math.floor(value * 100 + Fraction(1, 2))
-    return Decimal(cents).scaleb(-2, context=_EXACT)
+def _round_cents(value: Decimal) -> Decimal:
+    return value.quantize(_CENTS, rounding=ROUND_HALF_UP, context=_EXACT)
+
+
+def _average_cents(total: Decimal, count: int) -> Decimal:
+    """total / count rounded half up to 2 places, using exact integer division."""
+    quotient, remainder = _EXACT.divmod(_EXACT.scaleb(total, 2), Decimal(count))
+    if _EXACT.multiply(remainder, 2) >= count:
+        quotient = _EXACT.add(quotient, 1)
+    return _EXACT.scaleb(quotient, -2)
 
 
 def reset_store() -> None:
@@ -200,13 +205,15 @@ def analytics_summary(
     per_currency = []
     for currency in sorted(by_currency):
         amounts = by_currency[currency]
-        total = sum((Fraction(a) for a in amounts), Fraction(0))
+        total = Decimal(0)
+        for amount in amounts:
+            total = _EXACT.add(total, amount)
         per_currency.append(
             CurrencySummary(
                 currency=currency,
                 count=len(amounts),
                 total_amount=_round_cents(total),
-                average_amount=_round_cents(total / len(amounts)),
+                average_amount=_average_cents(total, len(amounts)),
             )
         )
 

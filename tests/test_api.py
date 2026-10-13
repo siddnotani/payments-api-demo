@@ -263,10 +263,6 @@ def test_analytics_summary_largest_transaction_matches_stored_record():
     assert largest == client.get(f"/transactions/{created['id']}").json()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Decimal(int) in _round_cents is quadratic: amount '1E+1000000' stalls the summary ~15s",
-)
 def test_analytics_summary_large_exponent_amount_is_bounded():
     script = (
         "from fastapi.testclient import TestClient\n"
