@@ -5,13 +5,14 @@ State is held in memory so the service runs with no external dependencies.
 """
 
 import logging
+from collections import defaultdict
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, ROUND_HALF_UP, Context, Decimal
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 import app.jobs  # noqa: F401  (registers in-app jobs)
@@ -68,6 +69,19 @@ class JobRunResponse(BaseModel):
     notes: list[str]
 
 
+class CurrencySummary(BaseModel):
+    currency: Currency = Field(..., examples=["EUR"])
+    count: int = Field(..., ge=0, examples=[3])
+    total_amount: Decimal = Field(..., examples=["376.50"])
+    average_amount: Decimal = Field(..., examples=["125.50"])
+
+
+class AnalyticsSummary(BaseModel):
+    total_transactions: int = Field(..., ge=0, examples=[5])
+    per_currency: list[CurrencySummary]
+    largest_transaction: Transaction | None
+
+
 IncidentScenario = Literal["fx_timeout", "ledger_drift", "duplicate_settlement"]
 
 _INCIDENT_MESSAGES: dict[str, str] = {
@@ -78,6 +92,22 @@ _INCIDENT_MESSAGES: dict[str, str] = {
 
 
 _transactions: dict[str, Transaction] = {}
+
+# Amounts are unbounded, so aggregate exactly rather than in the default 28-digit context.
+_EXACT = Context(prec=MAX_PREC, Emax=MAX_EMAX, Emin=MIN_EMIN)
+_CENTS = Decimal("0.01")
+
+
+def _round_cents(value: Decimal) -> Decimal:
+    return value.quantize(_CENTS, rounding=ROUND_HALF_UP, context=_EXACT)
+
+
+def _average_cents(total: Decimal, count: int) -> Decimal:
+    """total / count rounded half up to 2 places, using exact integer division."""
+    quotient, remainder = _EXACT.divmod(_EXACT.scaleb(total, 2), Decimal(count))
+    if _EXACT.multiply(remainder, 2) >= count:
+        quotient = _EXACT.add(quotient, 1)
+    return _EXACT.scaleb(quotient, -2)
 
 
 def reset_store() -> None:
@@ -155,3 +185,40 @@ def get_transaction(transaction_id: str) -> Transaction:
             detail=f"Transaction {transaction_id} not found",
         )
     return tx
+
+
+@app.get("/analytics/summary", response_model=AnalyticsSummary, tags=["analytics"])
+def analytics_summary(
+    account: Annotated[
+        str | None,
+        Query(min_length=1, description="Only include transactions sent or received by account"),
+    ] = None,
+) -> AnalyticsSummary:
+    txs = sorted(_transactions.values(), key=lambda t: t.created_at)
+    if account is not None:
+        txs = [t for t in txs if account in (t.from_account, t.to_account)]
+
+    by_currency: dict[Currency, list[Decimal]] = defaultdict(list)
+    for tx in txs:
+        by_currency[tx.currency].append(tx.amount)
+
+    per_currency = []
+    for currency in sorted(by_currency):
+        amounts = by_currency[currency]
+        total = Decimal(0)
+        for amount in amounts:
+            total = _EXACT.add(total, amount)
+        per_currency.append(
+            CurrencySummary(
+                currency=currency,
+                count=len(amounts),
+                total_amount=_round_cents(total),
+                average_amount=_average_cents(total, len(amounts)),
+            )
+        )
+
+    return AnalyticsSummary(
+        total_transactions=len(txs),
+        per_currency=per_currency,
+        largest_transaction=max(txs, key=lambda t: t.amount, default=None),
+    )

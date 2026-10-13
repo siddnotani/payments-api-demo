@@ -1,3 +1,7 @@
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -144,3 +148,136 @@ def test_simulated_incident_all_scenarios(scenario, fragment):
 def test_simulated_incident_rejects_unknown_scenario():
     response = client.post("/ops/incidents/meteor_strike")
     assert response.status_code == 422
+
+
+def test_analytics_summary_empty_store():
+    response = client.get("/analytics/summary")
+    assert response.status_code == 200
+    assert response.json() == {
+        "total_transactions": 0,
+        "per_currency": [],
+        "largest_transaction": None,
+    }
+
+
+def test_analytics_summary_groups_by_currency():
+    for amount, currency in [
+        ("100.00", "EUR"),
+        ("50.25", "EUR"),
+        ("10.00", "EUR"),
+        ("200.00", "GBP"),
+        ("1.00", "USD"),
+        ("2.00", "USD"),
+    ]:
+        client.post("/transactions", json={**SAMPLE_TX, "amount": amount, "currency": currency})
+
+    response = client.get("/analytics/summary")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_transactions"] == 6
+    assert body["per_currency"] == [
+        {"currency": "EUR", "count": 3, "total_amount": "160.25", "average_amount": "53.42"},
+        {"currency": "GBP", "count": 1, "total_amount": "200.00", "average_amount": "200.00"},
+        {"currency": "USD", "count": 2, "total_amount": "3.00", "average_amount": "1.50"},
+    ]
+    assert body["largest_transaction"]["amount"] == "200.00"
+    assert body["largest_transaction"]["currency"] == "GBP"
+
+
+def test_analytics_summary_largest_tie_returns_earliest():
+    first = client.post("/transactions", json={**SAMPLE_TX, "amount": "5.00"}).json()
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "5.00"})
+    body = client.get("/analytics/summary").json()
+    assert body["largest_transaction"]["id"] == first["id"]
+
+
+def test_analytics_summary_filters_by_account():
+    client.post("/transactions", json={**SAMPLE_TX, "from_account": "ACC-A", "to_account": "ACC-B"})
+    client.post(
+        "/transactions",
+        json={**SAMPLE_TX, "from_account": "ACC-C", "to_account": "ACC-A", "amount": "300.00"},
+    )
+    client.post(
+        "/transactions",
+        json={**SAMPLE_TX, "from_account": "ACC-B", "to_account": "ACC-C", "amount": "999.00"},
+    )
+
+    body = client.get("/analytics/summary", params={"account": "ACC-A"}).json()
+    assert body["total_transactions"] == 2
+    assert body["per_currency"] == [
+        {"currency": "EUR", "count": 2, "total_amount": "425.50", "average_amount": "212.75"},
+    ]
+    assert body["largest_transaction"]["amount"] == "300.00"
+
+    unknown = client.get("/analytics/summary", params={"account": "ACC-Z"}).json()
+    assert unknown == {"total_transactions": 0, "per_currency": [], "largest_transaction": None}
+
+
+def test_analytics_summary_rejects_empty_account():
+    assert client.get("/analytics/summary", params={"account": ""}).status_code == 422
+
+
+def test_analytics_summary_handles_large_amounts():
+    big = "9" * 40 + ".99"
+    client.post("/transactions", json={**SAMPLE_TX, "amount": big})
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "0.01"})
+    body = client.get("/analytics/summary").json()
+    eur = body["per_currency"][0]
+    assert eur["total_amount"] == "1" + "0" * 40 + ".00"
+    assert eur["average_amount"] == "5" + "0" * 39 + ".00"
+    assert body["largest_transaction"]["amount"] == big
+
+
+def test_analytics_summary_rounds_half_up():
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "0.125"})
+    body = client.get("/analytics/summary").json()
+    assert body["per_currency"][0]["total_amount"] == "0.13"
+    assert body["per_currency"][0]["average_amount"] == "0.13"
+
+    reset_store()
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "0.01"})
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "0.04"})
+    eur = client.get("/analytics/summary").json()["per_currency"][0]
+    assert eur["total_amount"] == "0.05"
+    assert eur["average_amount"] == "0.03"
+
+
+def test_analytics_summary_sums_sub_cent_amounts_before_rounding():
+    for _ in range(3):
+        client.post("/transactions", json={**SAMPLE_TX, "amount": "0.005"})
+    eur = client.get("/analytics/summary").json()["per_currency"][0]
+    assert eur == {"currency": "EUR", "count": 3, "total_amount": "0.02", "average_amount": "0.01"}
+
+
+def test_analytics_summary_account_filter_requires_exact_match():
+    client.post("/transactions", json={**SAMPLE_TX, "from_account": "ACC-A", "to_account": "ACC-B"})
+    for account in ["ACC", "acc-a", "ACC-A "]:
+        body = client.get("/analytics/summary", params={"account": account}).json()
+        assert body["total_transactions"] == 0, account
+
+
+def test_analytics_summary_largest_transaction_matches_stored_record():
+    created = client.post("/transactions", json=SAMPLE_TX).json()
+    largest = client.get("/analytics/summary").json()["largest_transaction"]
+    assert largest == created
+    assert largest == client.get(f"/transactions/{created['id']}").json()
+
+
+def test_analytics_summary_large_exponent_amount_is_bounded():
+    script = (
+        "from fastapi.testclient import TestClient\n"
+        "from app.main import app\n"
+        "c = TestClient(app)\n"
+        "tx = {'from_account': 'A', 'to_account': 'B', 'amount': '1E+1000000'}\n"
+        "assert c.post('/transactions', json=tx).status_code == 201\n"
+        "assert c.get('/analytics/summary').status_code == 200\n"
+    )
+    try:
+        subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=Path(__file__).resolve().parents[1],
+            check=True,
+            timeout=5,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("GET /analytics/summary did not finish within 5s")
