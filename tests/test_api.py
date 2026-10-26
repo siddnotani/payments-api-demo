@@ -128,6 +128,64 @@ def test_list_transactions_rejects_invalid_pagination(query):
     assert client.get(f"/transactions?{query}").status_code == 422
 
 
+def test_list_transactions_min_limit_returns_oldest():
+    ids = _seed_transactions(3)
+    response = client.get("/transactions?limit=1")
+    assert response.status_code == 200
+    assert [tx["id"] for tx in response.json()] == ids[:1]
+
+
+def test_list_transactions_offset_with_default_limit():
+    ids = _seed_transactions(5)
+    body = client.get("/transactions?offset=2").json()
+    assert [tx["id"] for tx in body] == ids[2:]
+
+
+def test_list_transactions_huge_offset_is_empty():
+    _seed_transactions(3)
+    response = client.get(f"/transactions?offset={10**18}")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_list_transactions_pages_are_stable_for_equal_created_at():
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    ids = [f"tie-{i}" for i in range(6)]
+    for tx_id in ids:
+        _transactions[tx_id] = Transaction(
+            id=tx_id,
+            status=TransactionStatus.COMPLETED,
+            created_at=created_at,
+            from_account="A",
+            to_account="B",
+            amount=Decimal("1.00"),
+        )
+    pages = [
+        [tx["id"] for tx in client.get(f"/transactions?limit=4&offset={o}").json()] for o in (0, 4)
+    ]
+    assert pages == [ids[0:4], ids[4:6]]
+
+
+def test_list_transactions_paginates_created_transactions():
+    created = [
+        client.post("/transactions", json={**SAMPLE_TX, "amount": f"{i}.00"}).json()["id"]
+        for i in range(1, 4)
+    ]
+    first = client.get("/transactions?limit=2").json()
+    second = client.get("/transactions?limit=2&offset=2").json()
+    assert [tx["id"] for tx in first + second] == created
+
+
+@pytest.mark.parametrize(
+    ("query", "param"),
+    [("limit=0", "limit"), (f"limit={MAX_PAGE_SIZE + 1}", "limit"), ("offset=-1", "offset")],
+)
+def test_list_transactions_invalid_pagination_detail_names_param(query, param):
+    response = client.get(f"/transactions?{query}")
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["query", param]
+
+
 def test_list_jobs_includes_heartbeat():
     names = [j["name"] for j in client.get("/ops/jobs").json()]
     assert "heartbeat" in names
