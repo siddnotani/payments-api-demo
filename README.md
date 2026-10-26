@@ -11,7 +11,7 @@ real payments system.
 | ------ | --------------------------- | ------------------------------ |
 | GET    | `/health`                   | Health check + transaction count |
 | POST   | `/transactions`             | Create a transaction (201)     |
-| GET    | `/transactions`             | List transactions              |
+| GET    | `/transactions`             | List transactions, oldest first (`limit` 1-1000, default 100; `offset` default 0) |
 | GET    | `/transactions/{id}`        | Get a transaction by id (404 if unknown) |
 | GET    | `/ops/jobs`                 | Jobs registered on the in-app scheduler |
 | POST   | `/ops/jobs/{name}/run`      | Run a job (`dry_run=true` by default)  |

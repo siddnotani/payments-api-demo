@@ -1,7 +1,17 @@
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app, reset_store
+from app.main import (
+    MAX_PAGE_SIZE,
+    Transaction,
+    TransactionStatus,
+    _transactions,
+    app,
+    reset_store,
+)
 from app.scheduler import JobResult, job
 
 client = TestClient(app)
@@ -61,6 +71,61 @@ def test_list_transactions():
     body = response.json()
     assert len(body) == 2
     assert [tx["amount"] for tx in body] == ["125.50", "10.00"]
+
+
+def _seed_transactions(count: int) -> list[str]:
+    """Insert transactions with out-of-order created_at; return ids oldest first."""
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    txs = [
+        Transaction(
+            id=f"tx-{i:04d}",
+            status=TransactionStatus.COMPLETED,
+            created_at=base + timedelta(seconds=i),
+            from_account="A",
+            to_account="B",
+            amount=Decimal("1.00"),
+        )
+        for i in range(count)
+    ]
+    for tx in reversed(txs):
+        _transactions[tx.id] = tx
+    return [tx.id for tx in txs]
+
+
+def test_list_transactions_default_page_size():
+    ids = _seed_transactions(150)
+    body = client.get("/transactions").json()
+    assert [tx["id"] for tx in body] == ids[:100]
+
+
+def test_list_transactions_limit_and_offset():
+    ids = _seed_transactions(25)
+    pages = [
+        [tx["id"] for tx in client.get(f"/transactions?limit=10&offset={o}").json()]
+        for o in (0, 10, 20)
+    ]
+    assert pages == [ids[0:10], ids[10:20], ids[20:25]]
+
+
+def test_list_transactions_offset_past_end_is_empty():
+    _seed_transactions(3)
+    response = client.get("/transactions?offset=3")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_list_transactions_max_page_size():
+    ids = _seed_transactions(MAX_PAGE_SIZE + 1)
+    body = client.get(f"/transactions?limit={MAX_PAGE_SIZE}").json()
+    assert [tx["id"] for tx in body] == ids[:MAX_PAGE_SIZE]
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["limit=0", f"limit={MAX_PAGE_SIZE + 1}", "offset=-1", "limit=abc"],
+)
+def test_list_transactions_rejects_invalid_pagination(query):
+    assert client.get(f"/transactions?{query}").status_code == 422
 
 
 def test_list_jobs_includes_heartbeat():

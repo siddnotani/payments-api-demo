@@ -4,14 +4,15 @@ A deliberately small FastAPI service modelling a payments/transactions domain.
 State is held in memory so the service runs with no external dependencies.
 """
 
+import heapq
 import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 import app.jobs  # noqa: F401  (registers in-app jobs)
@@ -79,6 +80,9 @@ _INCIDENT_MESSAGES: dict[str, str] = {
 
 _transactions: dict[str, Transaction] = {}
 
+DEFAULT_PAGE_SIZE = 100
+MAX_PAGE_SIZE = 1000
+
 
 def reset_store() -> None:
     """Clear all stored transactions (used by tests)."""
@@ -142,8 +146,14 @@ def simulate_incident(scenario: IncidentScenario) -> dict[str, str]:
 
 
 @app.get("/transactions", response_model=list[Transaction], tags=["transactions"])
-def list_transactions() -> list[Transaction]:
-    return sorted(_transactions.values(), key=lambda t: t.created_at)
+def list_transactions(
+    limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> list[Transaction]:
+    """List transactions oldest first, one page at a time."""
+    # nsmallest is equivalent to sorted(...)[:n] but O(n log k) for a k-row page.
+    page_end = offset + limit
+    return heapq.nsmallest(page_end, _transactions.values(), key=lambda t: t.created_at)[offset:]
 
 
 @app.get("/transactions/{transaction_id}", response_model=Transaction, tags=["transactions"])
