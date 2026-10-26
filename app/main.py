@@ -6,7 +6,7 @@ State is held in memory so the service runs with no external dependencies.
 
 import logging
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, Context, Decimal
 from enum import StrEnum
 from typing import Literal
 from uuid import uuid4
@@ -68,6 +68,19 @@ class JobRunResponse(BaseModel):
     notes: list[str]
 
 
+class TransactionAnalytics(BaseModel):
+    total_count: int = Field(..., ge=0, examples=[3])
+    total_amount_by_currency: dict[Currency, Decimal] = Field(
+        default_factory=dict, examples=[{"EUR": "135.50", "GBP": "20.00"}]
+    )
+    count_by_currency: dict[Currency, int] = Field(
+        default_factory=dict, examples=[{"EUR": 2, "GBP": 1}]
+    )
+    average_amount_by_currency: dict[Currency, Decimal] = Field(
+        default_factory=dict, examples=[{"EUR": "67.75", "GBP": "20.00"}]
+    )
+
+
 IncidentScenario = Literal["fx_timeout", "ledger_drift", "duplicate_settlement"]
 
 _INCIDENT_MESSAGES: dict[str, str] = {
@@ -78,6 +91,17 @@ _INCIDENT_MESSAGES: dict[str, str] = {
 
 
 _transactions: dict[str, Transaction] = {}
+
+# Amounts are unbounded, so aggregate exactly rather than in the default 28-digit context.
+_EXACT = Context(prec=MAX_PREC, Emax=MAX_EMAX, Emin=MIN_EMIN)
+
+
+def _average_cents(total: Decimal, count: int) -> Decimal:
+    """total / count rounded half up to 2 places, using exact integer division."""
+    quotient, remainder = _EXACT.divmod(_EXACT.scaleb(total, 2), Decimal(count))
+    if _EXACT.multiply(remainder, 2) >= count:
+        quotient = _EXACT.add(quotient, 1)
+    return _EXACT.scaleb(quotient, -2)
 
 
 def reset_store() -> None:
@@ -144,6 +168,26 @@ def simulate_incident(scenario: IncidentScenario) -> dict[str, str]:
 @app.get("/transactions", response_model=list[Transaction], tags=["transactions"])
 def list_transactions() -> list[Transaction]:
     return sorted(_transactions.values(), key=lambda t: t.created_at)
+
+
+@app.get("/transactions/analytics", response_model=TransactionAnalytics, tags=["transactions"])
+def transaction_analytics() -> TransactionAnalytics:
+    totals: dict[Currency, Decimal] = {}
+    counts: dict[Currency, int] = {}
+    for tx in _transactions.values():
+        totals[tx.currency] = _EXACT.add(totals.get(tx.currency, Decimal(0)), tx.amount)
+        counts[tx.currency] = counts.get(tx.currency, 0) + 1
+
+    return TransactionAnalytics(
+        total_count=sum(counts.values()),
+        total_amount_by_currency=totals,
+        count_by_currency=counts,
+        average_amount_by_currency={
+            currency: _average_cents(total, counts[currency])
+            for currency, total in totals.items()
+            if counts[currency]
+        },
+    )
 
 
 @app.get("/transactions/{transaction_id}", response_model=Transaction, tags=["transactions"])

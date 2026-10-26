@@ -63,6 +63,58 @@ def test_list_transactions():
     assert [tx["amount"] for tx in body] == ["125.50", "10.00"]
 
 
+def test_transaction_analytics_empty_store():
+    response = client.get("/transactions/analytics")
+    assert response.status_code == 200
+    assert response.json() == {
+        "total_count": 0,
+        "total_amount_by_currency": {},
+        "count_by_currency": {},
+        "average_amount_by_currency": {},
+    }
+
+
+def test_transaction_analytics_multiple_currencies():
+    client.post("/transactions", json=SAMPLE_TX)
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "10.00"})
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "0.01"})
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "20.00", "currency": "GBP"})
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "5", "currency": "USD"})
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "2.50", "currency": "USD"})
+
+    response = client.get("/transactions/analytics")
+    assert response.status_code == 200
+    assert response.json() == {
+        "total_count": 6,
+        "total_amount_by_currency": {"EUR": "135.51", "GBP": "20.00", "USD": "7.50"},
+        "count_by_currency": {"EUR": 3, "GBP": 1, "USD": 2},
+        "average_amount_by_currency": {"EUR": "45.17", "GBP": "20.00", "USD": "3.75"},
+    }
+
+
+def test_transaction_analytics_route_not_shadowed_by_id_lookup():
+    client.post("/transactions", json=SAMPLE_TX)
+    response = client.get("/transactions/analytics")
+    assert response.status_code == 200
+    assert response.json()["total_count"] == 1
+
+
+def test_transaction_analytics_average_rounds_half_up():
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "0.01"})
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "0.02"})
+    body = client.get("/transactions/analytics").json()
+    assert body["average_amount_by_currency"] == {"EUR": "0.02"}
+
+
+def test_transaction_analytics_huge_amounts_stay_exact():
+    big = "1" + "0" * 40 + ".01"
+    client.post("/transactions", json={**SAMPLE_TX, "amount": big})
+    client.post("/transactions", json={**SAMPLE_TX, "amount": big})
+    body = client.get("/transactions/analytics").json()
+    assert body["total_amount_by_currency"] == {"EUR": "2" + "0" * 40 + ".02"}
+    assert body["average_amount_by_currency"] == {"EUR": big}
+
+
 def test_list_jobs_includes_heartbeat():
     names = [j["name"] for j in client.get("/ops/jobs").json()]
     assert "heartbeat" in names
