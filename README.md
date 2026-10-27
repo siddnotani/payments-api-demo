@@ -16,9 +16,21 @@ real payments system.
 | GET    | `/ops/jobs`                 | Jobs registered on the in-app scheduler |
 | POST   | `/ops/jobs/{name}/run`      | Run a job (`dry_run=true` by default)  |
 | POST   | `/ops/incidents/{scenario}` | Simulate an incident (always 500)      |
+| GET    | `/notifications?recipient=` | Notifications for an account, newest first |
+| POST   | `/notifications/{id}/read?recipient=` | Mark a notification read (404 if unknown or not the recipient's) |
 
 Transactions are stored in an in-memory dict, so state resets on restart and
 no database is required.
+
+### Notifications
+
+`POST /transactions` emits in-app notifications (`app/notifications.py`, also
+in memory): `transaction.created` to `from_account`, then, once the transaction
+is `COMPLETED`, `transaction.succeeded` to both `from_account` ("sent") and
+`to_account` ("received"). `transaction.failed` is defined for future failure
+states. Each notification has `id`, `recipient`, `type`, `message`,
+`transaction_id`, `read` (default `false`) and `created_at`. There is no auth,
+so the `recipient` account is passed as a query parameter.
 
 ## Run locally
 
