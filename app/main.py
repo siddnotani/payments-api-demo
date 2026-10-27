@@ -8,13 +8,15 @@ import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 import app.jobs  # noqa: F401  (registers in-app jobs)
+from app import notifications
+from app.notifications import Notification, NotificationType
 from app.scheduler import registered_jobs, run_job
 
 log = logging.getLogger("payments.api")
@@ -81,8 +83,33 @@ _transactions: dict[str, Transaction] = {}
 
 
 def reset_store() -> None:
-    """Clear all stored transactions (used by tests)."""
+    """Clear all stored transactions and notifications (used by tests)."""
     _transactions.clear()
+    notifications.reset_store()
+
+
+def _notify_transaction(tx: Transaction) -> None:
+    """Emit in-app notifications for a transaction's current lifecycle state."""
+    summary = f"{tx.amount} {tx.currency}"
+    notifications.create_notification(
+        tx.from_account,
+        NotificationType.TRANSACTION_CREATED,
+        f"Payment of {summary} created",
+        tx.id,
+    )
+    if tx.status == TransactionStatus.COMPLETED:
+        notifications.create_notification(
+            tx.from_account,
+            NotificationType.TRANSACTION_SUCCEEDED,
+            f"Payment of {summary} sent",
+            tx.id,
+        )
+        notifications.create_notification(
+            tx.to_account,
+            NotificationType.TRANSACTION_SUCCEEDED,
+            f"Payment of {summary} received",
+            tx.id,
+        )
 
 
 @app.get("/health", response_model=HealthResponse, tags=["ops"])
@@ -109,6 +136,7 @@ def create_transaction(payload: TransactionCreate) -> Transaction:
         **payload.model_dump(),
     )
     _transactions[tx.id] = tx
+    _notify_transaction(tx)
     return tx
 
 
@@ -155,3 +183,26 @@ def get_transaction(transaction_id: str) -> Transaction:
             detail=f"Transaction {transaction_id} not found",
         )
     return tx
+
+
+@app.get("/notifications", response_model=list[Notification], tags=["notifications"])
+def list_notifications(recipient: Annotated[str, Query(min_length=1)]) -> list[Notification]:
+    """Notifications for an account, newest first."""
+    return notifications.list_notifications(recipient)
+
+
+@app.post(
+    "/notifications/{notification_id}/read",
+    response_model=Notification,
+    tags=["notifications"],
+)
+def mark_notification_read(
+    notification_id: str, recipient: Annotated[str, Query(min_length=1)]
+) -> Notification:
+    notification = notifications.mark_read(notification_id, recipient)
+    if notification is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Notification {notification_id} not found",
+        )
+    return notification
