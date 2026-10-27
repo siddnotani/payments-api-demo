@@ -144,3 +144,12 @@ def test_simulated_incident_all_scenarios(scenario, fragment):
 def test_simulated_incident_rejects_unknown_scenario():
     response = client.post("/ops/incidents/meteor_strike")
     assert response.status_code == 422
+
+
+def test_mark_notification_read_rejects_empty_recipient():
+    client.post("/transactions", json=SAMPLE_TX)
+    payee = SAMPLE_TX["to_account"]
+    target = client.get("/notifications", params={"recipient": payee}).json()[0]
+    response = client.post(f"/notifications/{target['id']}/read", params={"recipient": ""})
+    assert response.status_code == 422
+    assert client.get("/notifications", params={"recipient": payee}).json()[0]["read"] is False
