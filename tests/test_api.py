@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -191,3 +193,60 @@ def test_analytics_summary_large_amounts_stay_exact():
     (eur,) = client.get("/analytics/summary").json()["by_currency"]
     assert eur["total_amount"] == "1" + "0" * 40 + ".01"
     assert eur["average_amount"] == "5" + "0" * 39 + ".01"
+
+
+def test_analytics_summary_sorts_currencies_by_code():
+    for currency in ("USD", "GBP", "EUR"):
+        client.post("/transactions", json={**SAMPLE_TX, "currency": currency})
+
+    body = client.get("/analytics/summary").json()
+    assert body["total_transactions"] == 3
+    assert [c["currency"] for c in body["by_currency"]] == ["EUR", "GBP", "USD"]
+    assert all(c["count"] == 1 for c in body["by_currency"])
+
+
+@pytest.mark.parametrize(
+    ("amounts", "expected_average"),
+    [
+        (("0.01", "0.04"), "0.03"),
+        (("0.01", "0.02"), "0.02"),
+        (("0.005",), "0.01"),
+        (("0.004",), "0.00"),
+    ],
+)
+def test_analytics_summary_average_rounds_half_up_at_midpoint(amounts, expected_average):
+    for amount in amounts:
+        client.post("/transactions", json={**SAMPLE_TX, "amount": amount})
+
+    (eur,) = client.get("/analytics/summary").json()["by_currency"]
+    assert eur["count"] == len(amounts)
+    assert eur["average_amount"] == expected_average
+
+
+def test_analytics_summary_timestamps_are_min_and_max_created_at(monkeypatch):
+    import app.main as main
+
+    stamps = iter(
+        [
+            datetime(2026, 1, 3, tzinfo=UTC),
+            datetime(2026, 1, 1, tzinfo=UTC),
+            datetime(2026, 1, 2, tzinfo=UTC),
+        ]
+    )
+
+    class FakeDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return next(stamps)
+
+    monkeypatch.setattr(main, "datetime", FakeDatetime)
+    for _ in range(3):
+        client.post("/transactions", json=SAMPLE_TX)
+
+    body = client.get("/analytics/summary").json()
+    assert body["first_transaction_at"] == "2026-01-01T00:00:00Z"
+    assert body["last_transaction_at"] == "2026-01-03T00:00:00Z"
+
+
+def test_analytics_summary_rejects_post():
+    assert client.post("/analytics/summary").status_code == 405
