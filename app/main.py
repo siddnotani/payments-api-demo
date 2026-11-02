@@ -5,8 +5,9 @@ State is held in memory so the service runs with no external dependencies.
 """
 
 import logging
+from collections import defaultdict
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, Context, Decimal
 from enum import StrEnum
 from typing import Literal
 from uuid import uuid4
@@ -68,6 +69,20 @@ class JobRunResponse(BaseModel):
     notes: list[str]
 
 
+class CurrencySummary(BaseModel):
+    currency: Currency
+    count: int
+    total_amount: Decimal
+    average_amount: Decimal
+
+
+class AnalyticsSummary(BaseModel):
+    total_transactions: int
+    by_currency: list[CurrencySummary]
+    first_transaction_at: datetime | None
+    last_transaction_at: datetime | None
+
+
 IncidentScenario = Literal["fx_timeout", "ledger_drift", "duplicate_settlement"]
 
 _INCIDENT_MESSAGES: dict[str, str] = {
@@ -78,6 +93,17 @@ _INCIDENT_MESSAGES: dict[str, str] = {
 
 
 _transactions: dict[str, Transaction] = {}
+
+# Amounts are unbounded, so aggregate exactly rather than in the default 28-digit context.
+_EXACT = Context(prec=MAX_PREC, Emax=MAX_EMAX, Emin=MIN_EMIN)
+
+
+def _average_cents(total: Decimal, count: int) -> Decimal:
+    """total / count rounded half up to 2 places, using exact integer division."""
+    quotient, remainder = _EXACT.divmod(_EXACT.scaleb(total, 2), Decimal(count))
+    if _EXACT.multiply(remainder, 2) >= count:
+        quotient = _EXACT.add(quotient, 1)
+    return _EXACT.scaleb(quotient, -2)
 
 
 def reset_store() -> None:
@@ -155,3 +181,34 @@ def get_transaction(transaction_id: str) -> Transaction:
             detail=f"Transaction {transaction_id} not found",
         )
     return tx
+
+
+@app.get("/analytics/summary", response_model=AnalyticsSummary, tags=["analytics"])
+def analytics_summary() -> AnalyticsSummary:
+    txs = list(_transactions.values())
+    by_currency: dict[Currency, list[Decimal]] = defaultdict(list)
+    for tx in txs:
+        by_currency[tx.currency].append(tx.amount)
+
+    summaries = []
+    for currency in sorted(by_currency):
+        amounts = by_currency[currency]
+        total = Decimal(0)
+        for amount in amounts:
+            total = _EXACT.add(total, amount)
+        summaries.append(
+            CurrencySummary(
+                currency=currency,
+                count=len(amounts),
+                total_amount=total,
+                average_amount=_average_cents(total, len(amounts)),
+            )
+        )
+
+    timestamps = [tx.created_at for tx in txs]
+    return AnalyticsSummary(
+        total_transactions=len(txs),
+        by_currency=summaries,
+        first_transaction_at=min(timestamps, default=None),
+        last_transaction_at=max(timestamps, default=None),
+    )
