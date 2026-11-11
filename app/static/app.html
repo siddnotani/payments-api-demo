@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Test-center scheduling</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem; color: #1f2933; }
+  h1 { margin-top: 0; }
+  section { border: 1px solid #cbd2d9; border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1.5rem; }
+  table { border-collapse: collapse; width: 100%; margin-top: .5rem; }
+  th, td { border-bottom: 1px solid #e4e7eb; padding: .4rem .5rem; text-align: left; font-size: .9rem; }
+  button { margin-right: .25rem; cursor: pointer; }
+  .badge { padding: .1rem .45rem; border-radius: 4px; font-size: .8rem; background: #e4e7eb; }
+  .PENDING { background: #fde68a; } .BOOKED, .ACCEPTED { background: #bbf7d0; }
+  .CANCELLED, .DECLINED, .EXPIRED { background: #fecaca; }
+  #msg { min-height: 1.2rem; color: #b91c1c; }
+  .stats span { margin-right: 1.25rem; }
+</style>
+</head>
+<body>
+<h1>Test-center scheduling</h1>
+<p id="msg" role="status"></p>
+
+<section aria-labelledby="my-bookings-title">
+  <h2 id="my-bookings-title">My bookings</h2>
+  <label>Candidate ID <input id="candidate" placeholder="cand-001"></label>
+  <button id="load-candidate">Load</button>
+  <h3>Seat offers</h3>
+  <table id="offers"><thead><tr><th>Session</th><th>Seat</th><th>Status</th><th>Expires</th><th></th></tr></thead><tbody></tbody></table>
+  <h3>Bookings</h3>
+  <table id="bookings"><thead><tr><th>Session</th><th>Seat</th><th>Status</th><th></th></tr></thead><tbody></tbody></table>
+  <h3>Waitlist</h3>
+  <table id="my-waitlist"><thead><tr><th>Session</th><th>Position</th><th>Accommodation</th></tr></thead><tbody></tbody></table>
+</section>
+
+<section aria-labelledby="drawer-title">
+  <h2 id="drawer-title">Staff: session waitlist drawer</h2>
+  <label>Session <select id="session"></select></label>
+  <button id="load-session">Refresh</button>
+  <button id="relay">Run outbox relay</button>
+  <div class="stats" id="stats"></div>
+  <table id="waitlist"><thead><tr><th>Position</th><th>Candidate</th><th>Accommodation</th><th>Offer</th><th>Expires</th></tr></thead><tbody></tbody></table>
+  <p id="recon"></p>
+</section>
+
+<script>
+const api = (path, opts = {}) =>
+  fetch(`/api/v2${path}`, { headers: { "Content-Type": "application/json" }, ...opts })
+    .then(async r => { const body = await r.json(); if (!r.ok) throw new Error(body.detail); return body; });
+const $ = id => document.getElementById(id);
+const esc = v => String(v ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+const badge = s => `<span class="badge ${s}">${s}</span>`;
+const fmt = d => d ? new Date(d).toLocaleString() : "";
+const sessionNames = {};
+const say = text => { $("msg").textContent = text; };
+
+function rows(tableId, items, render) {
+  $(tableId).querySelector("tbody").innerHTML =
+    items.length ? items.map(render).join("") : `<tr><td colspan="5"><em>None</em></td></tr>`;
+}
+
+async function loadSessions() {
+  const sessions = await api("/sessions");
+  const current = $("session").value;
+  $("session").innerHTML = sessions.map(s => {
+    sessionNames[s.id] = s.name;
+    return `<option value="${esc(s.id)}">${esc(s.name)}</option>`;
+  }).join("");
+  if (current) $("session").value = current;
+}
+
+async function loadCandidate() {
+  const id = $("candidate").value.trim();
+  if (!id) return;
+  await loadSessions();
+  const data = await api(`/candidates/${encodeURIComponent(id)}/bookings`);
+  rows("offers", data.offers, o => `<tr><td>${esc(sessionNames[o.session_id] || o.session_id)}</td>
+    <td>${o.seat_type}</td><td>${badge(o.status)}</td><td>${fmt(o.expires_at)}</td><td>${
+      o.status === "PENDING"
+        ? `<button data-accept="${o.id}">Accept</button><button data-decline="${o.id}">Decline</button>`
+        : ""}</td></tr>`);
+  rows("bookings", data.bookings, b => `<tr><td>${esc(sessionNames[b.session_id] || b.session_id)}</td>
+    <td>${b.seat_type}</td><td>${badge(b.status)}</td><td>${
+      b.status === "BOOKED" ? `<button data-cancel="${b.id}">Cancel</button>` : ""}</td></tr>`);
+  rows("my-waitlist", data.waitlist, w => `<tr><td>${esc(sessionNames[w.session_id] || w.session_id)}</td>
+    <td>${w.position}</td><td>${esc(w.accommodation || "-")}</td></tr>`);
+}
+
+async function loadSession() {
+  await loadSessions();
+  const id = $("session").value;
+  if (!id) return;
+  const [s, waitlist, recon] = await Promise.all([
+    api(`/sessions/${id}`), api(`/sessions/${id}/waitlist`), api("/reconciliation"),
+  ]);
+  $("stats").innerHTML = `<span>Capacity: <b>${s.capacity}</b></span><span>Booked: <b>${s.booked}</b></span>
+    <span>Held for offers: <b>${s.seats_held}</b></span><span>Seats available: <b>${s.seats_available}</b></span>`;
+  rows("waitlist", waitlist, w => `<tr><td>${w.position}</td><td>${esc(w.candidate_id)}</td>
+    <td>${esc(w.accommodation || "-")}</td><td>${w.offer ? badge(w.offer.status) : "-"}</td>
+    <td>${w.offer ? fmt(w.offer.expires_at) : ""}</td></tr>`);
+  $("recon").textContent = `Reconciliation: ${recon.mismatches} mismatch(es), ${recon.pending_events} event(s) not yet relayed`;
+}
+
+async function refresh() { await Promise.all([loadCandidate(), loadSession()]); }
+
+async function act(fn, ok) {
+  try { await fn(); say(ok); } catch (e) { say(e.message); }
+  await refresh();
+}
+
+document.addEventListener("click", e => {
+  const t = e.target;
+  if (t.dataset.accept) act(() => api(`/offers/${t.dataset.accept}/accept`, { method: "POST" }), "Offer accepted: you are booked.");
+  if (t.dataset.decline) act(() => api(`/offers/${t.dataset.decline}/decline`, { method: "POST" }), "Offer declined.");
+  if (t.dataset.cancel) act(() => api(`/bookings/${t.dataset.cancel}/cancel`, { method: "POST" }), "Booking cancelled.");
+});
+$("load-candidate").onclick = () => act(loadCandidate, "");
+$("load-session").onclick = () => act(loadSession, "");
+$("session").onchange = () => act(loadSession, "");
+$("relay").onclick = () => act(() => api("/outbox/relay", { method: "POST" }), "Outbox relayed.");
+const params = new URLSearchParams(location.search);
+if (params.get("candidate")) $("candidate").value = params.get("candidate");
+loadSessions().then(refresh).catch(e => say(e.message));
+</script>
+</body>
+</html>

@@ -8,14 +8,17 @@ import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
+from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 import app.jobs  # noqa: F401  (registers in-app jobs)
 from app.scheduler import registered_jobs, run_job
+from app.scheduling import router as scheduling_router
 
 log = logging.getLogger("payments.api")
 
@@ -24,6 +27,9 @@ app = FastAPI(
     version="0.1.0",
     description="Minimal transactions API used for CI/CD and QA demos.",
 )
+app.include_router(scheduling_router)
+
+_APP_PAGE = Path(__file__).parent / "static" / "app.html"
 
 
 class Currency(StrEnum):
@@ -110,6 +116,12 @@ def create_transaction(payload: TransactionCreate) -> Transaction:
     )
     _transactions[tx.id] = tx
     return tx
+
+
+@app.get("/app", include_in_schema=False)
+def scheduling_ui() -> FileResponse:
+    """My bookings + staff waitlist drawer for the scheduling slice."""
+    return FileResponse(_APP_PAGE, media_type="text/html")
 
 
 @app.get("/ops/jobs", response_model=list[JobInfo], tags=["ops"])
