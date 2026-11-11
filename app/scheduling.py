@@ -361,6 +361,8 @@ def accept_offer(offer_id: str, now: datetime | None = None) -> Booking:
     with _lock:
         offer = _get_offer(offer_id)
         _require_pending(offer, now)
+        if _has_active_booking(offer.session_id, offer.candidate_id):
+            raise _conflict(f"Candidate {offer.candidate_id} is already booked")
         entry = _waitlist[offer.waitlist_entry_id]
         booking = Booking(
             id=str(uuid4()),
@@ -591,6 +593,10 @@ def create_booking(session_id: str, payload: CandidateRequest) -> Booking:
             raise _conflict(f"Session {session_id} is {session.status.value}")
         if _has_active_booking(session_id, payload.candidate_id):
             raise _conflict(f"Candidate {payload.candidate_id} is already booked")
+        if _is_waitlisted(session_id, payload.candidate_id):
+            raise _conflict(
+                f"Candidate {payload.candidate_id} is on the waitlist; accept the offer instead"
+            )
         seat_type = _fitting_seat(payload.accommodation, _free_seats(session))
         if seat_type is None:
             raise _conflict("No seat available for this candidate; join the waitlist")

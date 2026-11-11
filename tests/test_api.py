@@ -386,11 +386,6 @@ def test_outbox_relay_job_dry_run_does_not_relay():
     assert len(still_pending) == pending
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="accept_offer does not check for an existing BOOKED booking, so a candidate "
-    "holding an offer can book directly and then accept, ending up booked twice",
-)
 def test_candidate_with_pending_offer_cannot_end_up_double_booked():
     session_id = _new_session()
     client.post(f"/api/v2/sessions/{session_id}/bookings", json={"candidate_id": "b0"})

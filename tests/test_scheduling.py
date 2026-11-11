@@ -503,3 +503,31 @@ def test_app_page_is_served():
     assert "text/html" in response.headers["content-type"]
     assert "My bookings" in response.text
     assert "waitlist drawer" in response.text
+
+
+def test_waitlisted_candidate_cannot_book_directly():
+    session_id = make_session(capacity=1)
+    book(session_id, "c1")
+    join(session_id, "w1")
+    client.patch(f"/api/v2/sessions/{session_id}/capacity", json={"capacity": 3})
+    response = book(session_id, "w1")
+    assert response.status_code == 409
+    assert "waitlist" in response.json()["detail"]
+
+
+def test_accept_is_409_when_candidate_already_booked():
+    session_id = make_session(capacity=1)
+    book(session_id, "c1")
+    join(session_id, "w1")
+    client.patch(f"/api/v2/sessions/{session_id}/capacity", json={"capacity": 2})
+    offer = pending_offers("w1")[0]
+    scheduling._bookings["manual"] = scheduling.Booking(
+        id="manual",
+        session_id=session_id,
+        candidate_id="w1",
+        accommodation=None,
+        seat_type=scheduling.SeatType.STANDARD,
+        status=scheduling.BookingStatus.BOOKED,
+        created_at=datetime.now(UTC),
+    )
+    assert client.post(f"/api/v2/offers/{offer['id']}/accept").status_code == 409
