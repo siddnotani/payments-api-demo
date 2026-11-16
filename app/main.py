@@ -6,7 +6,7 @@ State is held in memory so the service runs with no external dependencies.
 
 import logging
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, Context, Decimal
 from enum import StrEnum
 from typing import Literal
 from uuid import uuid4
@@ -56,6 +56,28 @@ class HealthResponse(BaseModel):
     transactions: int
 
 
+class CurrencyBreakdown(BaseModel):
+    currency: Currency
+    count: int
+    total_amount: Decimal
+    min_amount: Decimal
+    max_amount: Decimal
+    avg_amount: Decimal
+
+
+class AnalyticsSummary(BaseModel):
+    count: int
+    breakdowns: list[CurrencyBreakdown]
+
+
+class AccountAnalytics(BaseModel):
+    account: str
+    sent_count: int
+    received_count: int
+    sent_total: dict[Currency, Decimal]
+    received_total: dict[Currency, Decimal]
+
+
 class JobInfo(BaseModel):
     name: str
     schedule: str
@@ -83,6 +105,24 @@ _transactions: dict[str, Transaction] = {}
 def reset_store() -> None:
     """Clear all stored transactions (used by tests)."""
     _transactions.clear()
+
+
+# Amounts are unbounded, so aggregate in a context that never rounds or overflows.
+_EXACT = Context(prec=MAX_PREC, Emax=MAX_EMAX, Emin=MIN_EMIN)
+
+
+def _average(total: Decimal, count: int) -> Decimal:
+    """Mean rounded half-up to 2 decimal places, using exact integer division."""
+    quotient, remainder = _EXACT.divmod(_EXACT.scaleb(total, 2), count)
+    if _EXACT.multiply(remainder, 2) >= count:
+        quotient = _EXACT.add(quotient, 1)
+    return _EXACT.scaleb(quotient, -2)
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
 
 
 @app.get("/health", response_model=HealthResponse, tags=["ops"])
@@ -139,6 +179,74 @@ def simulate_incident(scenario: IncidentScenario) -> dict[str, str]:
     message = _INCIDENT_MESSAGES[scenario]
     log.error("incident.simulated", extra={"scenario": scenario, "detail": message})
     return {"scenario": scenario, "error": message}
+
+
+@app.get("/analytics/summary", response_model=AnalyticsSummary, tags=["analytics"])
+def analytics_summary(
+    currency: Currency | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+) -> AnalyticsSummary:
+    """Per-currency aggregates; `since`/`until` bound created_at inclusively (naive = UTC)."""
+    since, until = _as_utc(since), _as_utc(until)
+    if since is not None and until is not None and since > until:
+        raise HTTPException(status_code=422, detail="since must not be after until")
+
+    groups: dict[Currency, list[Decimal]] = {}
+    for tx in _transactions.values():
+        if currency is not None and tx.currency != currency:
+            continue
+        if since is not None and tx.created_at < since:
+            continue
+        if until is not None and tx.created_at > until:
+            continue
+        groups.setdefault(tx.currency, []).append(tx.amount)
+
+    breakdowns = []
+    for cur in Currency:
+        amounts = groups.get(cur)
+        if not amounts:
+            continue
+        total = Decimal(0)
+        for amount in amounts:
+            total = _EXACT.add(total, amount)
+        breakdowns.append(
+            CurrencyBreakdown(
+                currency=cur,
+                count=len(amounts),
+                total_amount=total,
+                min_amount=min(amounts),
+                max_amount=max(amounts),
+                avg_amount=_average(total, len(amounts)),
+            )
+        )
+    return AnalyticsSummary(count=sum(b.count for b in breakdowns), breakdowns=breakdowns)
+
+
+@app.get("/analytics/by-account/{account}", response_model=AccountAnalytics, tags=["analytics"])
+def analytics_by_account(account: str) -> AccountAnalytics:
+    sent_count = received_count = 0
+    sent_total: dict[Currency, Decimal] = {}
+    received_total: dict[Currency, Decimal] = {}
+    for tx in _transactions.values():
+        if tx.from_account == account:
+            sent_count += 1
+            sent_total[tx.currency] = _EXACT.add(sent_total.get(tx.currency, 0), tx.amount)
+        if tx.to_account == account:
+            received_count += 1
+            received_total[tx.currency] = _EXACT.add(received_total.get(tx.currency, 0), tx.amount)
+    if sent_count == 0 and received_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No transactions for account {account}",
+        )
+    return AccountAnalytics(
+        account=account,
+        sent_count=sent_count,
+        received_count=received_count,
+        sent_total=sent_total,
+        received_total=received_total,
+    )
 
 
 @app.get("/transactions", response_model=list[Transaction], tags=["transactions"])

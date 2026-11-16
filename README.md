@@ -16,6 +16,8 @@ real payments system.
 | GET    | `/ops/jobs`                 | Jobs registered on the in-app scheduler |
 | POST   | `/ops/jobs/{name}/run`      | Run a job (`dry_run=true` by default)  |
 | POST   | `/ops/incidents/{scenario}` | Simulate an incident (always 500)      |
+| GET    | `/analytics/summary`        | Per-currency count/total/min/max/avg   |
+| GET    | `/analytics/by-account/{account}` | Sent/received counts and totals for an account (404 if none) |
 
 Transactions are stored in an in-memory dict, so state resets on restart and
 no database is required.
@@ -36,6 +38,23 @@ Example:
 curl -X POST http://127.0.0.1:8000/transactions \
   -H 'Content-Type: application/json' \
   -d '{"from_account":"ES9121000418450200051332","to_account":"GB29NWBK60161331926819","amount":"125.50","currency":"EUR","reference":"Invoice 42"}'
+```
+
+## Analytics
+
+`GET /analytics/summary` returns the overall transaction count plus one breakdown per
+currency that has transactions (`count`, `total_amount`, `min_amount`, `max_amount`,
+`avg_amount`). Optional filters: `currency` (`EUR`/`GBP`/`USD`) and `since`/`until`
+(ISO 8601, inclusive bounds on `created_at`; naive values are treated as UTC). Totals are
+exact; averages are rounded half-up to 2 decimal places.
+
+`GET /analytics/by-account/{account}` returns `sent_count`, `received_count` and
+`sent_total`/`received_total` keyed by currency, or 404 if the account has no transactions.
+
+```bash
+curl http://127.0.0.1:8000/analytics/summary
+curl 'http://127.0.0.1:8000/analytics/summary?currency=EUR&since=2026-01-01T00:00:00Z&until=2026-12-31T23:59:59Z'
+curl http://127.0.0.1:8000/analytics/by-account/ES9121000418450200051332
 ```
 
 ## Quality checks
