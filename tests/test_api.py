@@ -270,3 +270,83 @@ def test_analytics_by_account_unknown_is_404():
     response = client.get("/analytics/by-account/NO_SUCH_ACCOUNT")
     assert response.status_code == 404
     assert response.json() == {"detail": "No transactions for account NO_SUCH_ACCOUNT"}
+
+
+@pytest.mark.parametrize("param", ["since", "until"])
+def test_analytics_summary_rejects_malformed_datetime(param):
+    response = client.get("/analytics/summary", params={param: "not-a-date"})
+    assert response.status_code == 422
+
+
+def test_analytics_summary_currency_filter_without_matches():
+    _create(currency="EUR")
+    body = client.get("/analytics/summary", params={"currency": "GBP"}).json()
+    assert body == {"count": 0, "breakdowns": []}
+
+
+def test_analytics_summary_combined_currency_and_date_filters():
+    _create(at=datetime(2026, 1, 1, tzinfo=UTC), amount="1.00", currency="USD")
+    _create(at=datetime(2026, 2, 1, tzinfo=UTC), amount="2.00", currency="USD")
+    _create(at=datetime(2026, 2, 1, tzinfo=UTC), amount="8.00", currency="EUR")
+
+    body = client.get(
+        "/analytics/summary", params={"currency": "USD", "since": "2026-01-15T00:00:00Z"}
+    ).json()
+    assert body["count"] == 1
+    assert [(b["currency"], b["total_amount"]) for b in body["breakdowns"]] == [("USD", "2.00")]
+
+
+def test_analytics_summary_bounds_with_utc_offset_and_naive_until():
+    _create(at=datetime(2026, 2, 1, 12, 0, tzinfo=UTC), amount="2.00")
+
+    def count(**params):
+        return client.get("/analytics/summary", params=params).json()["count"]
+
+    # 14:00+02:00 == 12:00Z, and bounds are inclusive.
+    assert count(since="2026-02-01T14:00:00+02:00") == 1
+    assert count(since="2026-02-01T14:00:01+02:00") == 0
+    assert count(until="2026-02-01T14:00:00+02:00") == 1
+    assert count(until="2026-02-01T13:59:59+02:00") == 0
+    # Naive `until` is treated as UTC.
+    assert count(until="2026-02-01T12:00:00") == 1
+    assert count(until="2026-02-01T11:59:59") == 0
+    # since == until selects exactly that instant.
+    assert count(since="2026-02-01T12:00:00Z", until="2026-02-01T12:00:00Z") == 1
+
+
+@pytest.mark.parametrize(
+    ("amounts", "expected_avg"),
+    [
+        (["0.005"], "0.01"),
+        (["0.004"], "0.00"),
+        (["2.675"], "2.68"),
+        (["0.333", "0.333", "0.334"], "0.33"),
+        (["0.001", "0.002", "0.002"], "0.00"),
+    ],
+)
+def test_analytics_summary_average_sub_cent_amounts(amounts, expected_avg):
+    for amount in amounts:
+        _create(amount=amount, currency="GBP")
+    gbp = client.get("/analytics/summary").json()["breakdowns"][0]
+    assert gbp["avg_amount"] == expected_avg
+
+
+def test_analytics_by_account_receive_only():
+    account = SAMPLE_TX["to_account"]
+    _create(amount="40.00", currency="EUR")
+    _create(amount="2.50", currency="EUR")
+
+    response = client.get(f"/analytics/by-account/{account}")
+    assert response.status_code == 200
+    assert response.json() == {
+        "account": account,
+        "sent_count": 0,
+        "received_count": 2,
+        "sent_total": {},
+        "received_total": {"EUR": "42.50"},
+    }
+
+
+def test_analytics_by_account_empty_store_is_404():
+    response = client.get(f"/analytics/by-account/{SAMPLE_TX['from_account']}")
+    assert response.status_code == 404
