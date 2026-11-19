@@ -13,6 +13,7 @@ real payments system.
 | POST   | `/transactions`             | Create a transaction (201)     |
 | GET    | `/transactions`             | List transactions              |
 | GET    | `/transactions/{id}`        | Get a transaction by id (404 if unknown) |
+| GET    | `/analytics/summary`        | Per-currency and per-status totals; optional `currency`, `from_date`, `to_date` (inclusive) |
 | GET    | `/ops/jobs`                 | Jobs registered on the in-app scheduler |
 | POST   | `/ops/jobs/{name}/run`      | Run a job (`dry_run=true` by default)  |
 | POST   | `/ops/incidents/{scenario}` | Simulate an incident (always 500)      |
@@ -42,13 +43,27 @@ curl -X POST http://127.0.0.1:8000/transactions \
 
 ```bash
 ruff check . && ruff format --check .
-pytest
+pytest -m "not e2e"   # fast unit/API tests
 ```
+
+### End-to-end tests (Playwright)
+
+`tests/e2e/` drives Swagger UI in headless Chromium against the app served by
+uvicorn on an ephemeral port. Install the browser once after `pip install`:
+
+```bash
+playwright install --with-deps chromium   # drop --with-deps if system libs are already present
+pytest -m e2e                             # add --headed to watch the browser
+```
+
+Plain `pytest` runs both suites. Swagger UI assets load from a CDN, so e2e
+tests need network access.
 
 ## CI/CD
 
 `.github/workflows/ci.yml` runs on every push and pull request to `main`:
-Python 3.11 setup, dependency install, `ruff` lint/format check and `pytest`.
+Python 3.11 setup, dependency install, `ruff` lint/format check, unit/API
+tests, then Chromium install and the Playwright e2e tests.
 A stubbed `deploy` job (no real secrets) illustrates a deployment stage that
 runs only after tests pass on `main`.
 
