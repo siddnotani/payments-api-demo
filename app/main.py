@@ -5,8 +5,9 @@ State is held in memory so the service runs with no external dependencies.
 """
 
 import logging
+from collections import Counter
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, Context, Decimal
 from enum import StrEnum
 from typing import Literal
 from uuid import uuid4
@@ -51,6 +52,21 @@ class Transaction(TransactionCreate):
     created_at: datetime
 
 
+class CurrencyStats(BaseModel):
+    currency: Currency
+    count: int
+    total_amount: Decimal
+    min_amount: Decimal
+    max_amount: Decimal
+    avg_amount: Decimal
+
+
+class AnalyticsSummary(BaseModel):
+    total_transactions: int
+    per_currency: list[CurrencyStats]
+    status_counts: dict[str, int]
+
+
 class HealthResponse(BaseModel):
     status: Literal["ok"]
     transactions: int
@@ -85,6 +101,37 @@ def reset_store() -> None:
     _transactions.clear()
 
 
+# Amounts are unbounded, so aggregate in a context that never rounds or overflows.
+_EXACT = Context(prec=MAX_PREC, Emax=MAX_EMAX, Emin=MIN_EMIN)
+_CENTS = 2
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value
+
+
+def _average(total: Decimal, count: int) -> Decimal:
+    """total / count rounded half-up to cents, using integer division to stay exact."""
+    quotient, remainder = _EXACT.divmod(_EXACT.scaleb(total, _CENTS), Decimal(count))
+    if 2 * remainder >= count:
+        quotient = _EXACT.add(quotient, 1)
+    return _EXACT.scaleb(quotient, -_CENTS).quantize(Decimal(1).scaleb(-_CENTS), context=_EXACT)
+
+
+def _currency_stats(currency: Currency, amounts: list[Decimal]) -> CurrencyStats:
+    total = Decimal(0)
+    for amount in amounts:
+        total = _EXACT.add(total, amount)
+    return CurrencyStats(
+        currency=currency,
+        count=len(amounts),
+        total_amount=total,
+        min_amount=min(amounts),
+        max_amount=max(amounts),
+        avg_amount=_average(total, len(amounts)),
+    )
+
+
 @app.get("/health", response_model=HealthResponse, tags=["ops"])
 def health() -> HealthResponse:
     return HealthResponse(status="ok", transactions=len(_transactions))
@@ -110,6 +157,40 @@ def create_transaction(payload: TransactionCreate) -> Transaction:
     )
     _transactions[tx.id] = tx
     return tx
+
+
+@app.get("/analytics/summary", response_model=AnalyticsSummary, tags=["analytics"])
+def analytics_summary(
+    currency: Currency | None = None,
+    from_date: datetime | None = None,
+    to_date: datetime | None = None,
+) -> AnalyticsSummary:
+    """Aggregate transactions per currency and status; date bounds are inclusive.
+
+    Naive datetimes are treated as UTC.
+    """
+    start = _as_utc(from_date) if from_date else None
+    end = _as_utc(to_date) if to_date else None
+    if start and end and start > end:
+        raise HTTPException(status_code=422, detail="from_date must not be after to_date")
+
+    matched = [
+        tx
+        for tx in _transactions.values()
+        if (currency is None or tx.currency == currency)
+        and (start is None or tx.created_at >= start)
+        and (end is None or tx.created_at <= end)
+    ]
+    amounts: dict[Currency, list[Decimal]] = {}
+    for tx in matched:
+        amounts.setdefault(tx.currency, []).append(tx.amount)
+    statuses = Counter(tx.status for tx in matched)
+
+    return AnalyticsSummary(
+        total_transactions=len(matched),
+        per_currency=[_currency_stats(c, amounts[c]) for c in Currency if c in amounts],
+        status_counts={s.value: statuses[s] for s in TransactionStatus},
+    )
 
 
 @app.get("/ops/jobs", response_model=list[JobInfo], tags=["ops"])

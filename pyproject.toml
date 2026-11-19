@@ -12,3 +12,6 @@ select = ["E", "F", "I", "B", "UP"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "e2e: browser end-to-end tests (Playwright); deselect with -m \"not e2e\"",
+]

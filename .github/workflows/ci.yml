@@ -28,7 +28,13 @@ jobs:
         run: ruff format --check .
 
       - name: Test (pytest)
-        run: pytest -q
+        run: pytest -q -m "not e2e"
+
+      - name: Install Playwright Chromium
+        run: playwright install --with-deps chromium
+
+      - name: E2E tests (Playwright)
+        run: pytest -q -m e2e
 
   # Illustrative deployment stage. It runs only on pushes to main after tests
   # pass and does not require any real secrets or infrastructure; replace the
