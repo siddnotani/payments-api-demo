@@ -295,3 +295,53 @@ def test_analytics_summary_reflects_new_transactions():
     body = _summary()
     assert body["total_transactions"] == 2
     assert [s["currency"] for s in body["per_currency"]] == ["EUR", "USD"]
+
+
+def test_analytics_summary_combines_currency_and_date_filters():
+    day = datetime(2026, 11, 1, tzinfo=UTC)
+    _create("1.00", "EUR", created_at=day)
+    _create("2.00", "GBP", created_at=day)
+    _create("4.00", "GBP", created_at=day + timedelta(days=2))
+
+    body = _summary(currency="GBP", to_date=(day + timedelta(days=1)).isoformat())
+
+    assert body["total_transactions"] == 1
+    assert body["per_currency"][0]["currency"] == "GBP"
+    assert body["per_currency"][0]["total_amount"] == "2.00"
+
+
+def test_analytics_summary_accepts_equal_date_bounds():
+    day = datetime(2026, 11, 1, tzinfo=UTC)
+    _create("1.00", created_at=day)
+    _create("2.00", created_at=day + timedelta(microseconds=1))
+    assert _summary(from_date=day.isoformat(), to_date=day.isoformat())["total_transactions"] == 1
+
+
+def test_analytics_summary_normalises_timezone_offsets():
+    day = datetime(2026, 11, 1, tzinfo=UTC)
+    _create("1.00", created_at=day)
+    assert _summary(from_date="2026-11-01T02:00:00+02:00")["total_transactions"] == 1
+    assert _summary(from_date="2026-11-01T02:00:01+02:00")["total_transactions"] == 0
+
+
+def test_analytics_summary_rejects_inverted_mixed_naive_and_aware_range():
+    response = client.get(
+        "/analytics/summary",
+        params={"from_date": "2026-11-01T03:00:00+02:00", "to_date": "2026-11-01T00:00:00"},
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("to_date", ["x", "2026-13-01T00:00:00"])
+def test_analytics_summary_rejects_invalid_to_date(to_date):
+    assert client.get("/analytics/summary", params={"to_date": to_date}).status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("amounts", "expected"),
+    [(["0.005"], "0.01"), (["0.004"], "0.00"), (["0.001", "0.004"], "0.00")],
+)
+def test_analytics_summary_average_rounds_sub_cent_amounts(amounts, expected):
+    for amount in amounts:
+        _create(amount)
+    assert _summary()["per_currency"][0]["avg_amount"] == expected
