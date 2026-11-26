@@ -1,3 +1,5 @@
+import re
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -190,3 +192,80 @@ def test_create_transaction_rejects_when_store_full(monkeypatch):
     assert response.status_code == 507
     assert response.json() == {"detail": "Transaction store is full (2 records)"}
     assert client.get("/health").json()["transactions"] == 2
+
+
+@pytest.mark.parametrize("account", ["X" * 10_000, "GB29NWBK60161331926819,EVIL", "not an iban"])
+def test_create_transaction_rejects_malformed_from_account(account):
+    response = client.post("/transactions", json={**SAMPLE_TX, "from_account": account})
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["body", "from_account"]
+    assert client.get("/transactions").json() == []
+
+
+@pytest.mark.parametrize(
+    ("account", "expected_status"),
+    [
+        ("GB29" + "A" * 10, 422),
+        ("GB29" + "A" * 11, 201),
+        ("GB29" + "A" * 30, 201),
+        ("GB29" + "A" * 31, 422),
+    ],
+)
+def test_create_transaction_account_length_boundaries(account, expected_status):
+    response = client.post("/transactions", json={**SAMPLE_TX, "to_account": account})
+    assert response.status_code == expected_status
+
+
+def test_create_transaction_rejects_non_string_account():
+    response = client.post("/transactions", json={**SAMPLE_TX, "to_account": 1234567890123456})
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["type"] == "string_type"
+
+
+@pytest.mark.parametrize("field", ["from_account", "to_account", "amount"])
+def test_create_transaction_rejects_missing_required_field(field):
+    payload = {k: v for k, v in SAMPLE_TX.items() if k != field}
+    response = client.post("/transactions", json=payload)
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["type"] == "missing"
+
+
+def test_create_transaction_normalizes_to_account():
+    payload = {**SAMPLE_TX, "to_account": "\tgb29nwbk60161331926819 "}
+    response = client.post("/transactions", json=payload)
+    assert response.status_code == 201
+    assert response.json()["to_account"] == "GB29NWBK60161331926819"
+
+
+@pytest.mark.parametrize("amount", ["0.01", "1000000000.00"])
+def test_create_transaction_accepts_amount_at_limits(amount):
+    response = client.post("/transactions", json={**SAMPLE_TX, "amount": amount})
+    assert response.status_code == 201
+    assert response.json()["amount"] == amount
+
+
+def test_create_transaction_rejects_negative_amount():
+    response = client.post("/transactions", json={**SAMPLE_TX, "amount": "-1.00"})
+    assert response.status_code == 422
+
+
+def test_create_transaction_same_account_checked_before_store_full(monkeypatch):
+    monkeypatch.setattr("app.main.MAX_STORED_TRANSACTIONS", 0)
+    payload = {**SAMPLE_TX, "to_account": SAMPLE_TX["from_account"]}
+    response = client.post("/transactions", json=payload)
+    assert response.status_code == 422
+    assert response.json() == {"detail": "from_account and to_account must differ"}
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="decimal_places=2 ignores trailing zeros/exponents; amount is stored and "
+    "returned non-canonically (e.g. '125.5000000', '1E+2')",
+)
+@pytest.mark.parametrize("amount", ["1.500", "125.5000000", "1E+2"])
+def test_create_transaction_amount_is_canonical_two_decimal(amount):
+    response = client.post("/transactions", json={**SAMPLE_TX, "amount": amount})
+    if response.status_code == 201:
+        assert re.fullmatch(r"\d+\.\d{2}", response.json()["amount"])
+    else:
+        assert response.status_code == 422
