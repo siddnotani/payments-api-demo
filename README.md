@@ -24,11 +24,19 @@ no database is required.
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install --require-hashes -r requirements.lock   # or: pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
 Interactive docs: http://127.0.0.1:8000/docs
+
+`requirements.lock` pins every dependency with hashes and is what CI installs.
+After changing `requirements.txt`, regenerate it with pip-tools:
+
+```bash
+pip-compile --generate-hashes --allow-unsafe --strip-extras --no-emit-index-url \
+  --output-file=requirements.lock requirements.txt
+```
 
 Example:
 
