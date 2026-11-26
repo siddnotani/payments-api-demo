@@ -12,7 +12,7 @@ from typing import Annotated, Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, status
-from pydantic import BaseModel, BeforeValidator, Field, StringConstraints
+from pydantic import BaseModel, BeforeValidator, Field, StringConstraints, field_validator
 
 import app.jobs  # noqa: F401  (registers in-app jobs)
 from app.scheduler import registered_jobs, run_job
@@ -39,6 +39,7 @@ class TransactionStatus(StrEnum):
 
 IBAN_PATTERN = r"^[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}$"
 MAX_AMOUNT = Decimal("1000000000.00")
+AMOUNT_QUANTUM = Decimal("0.01")
 MAX_STORED_TRANSACTIONS = 10_000
 
 
@@ -66,6 +67,11 @@ class TransactionCreate(BaseModel):
     )
     currency: Currency = Currency.EUR
     reference: str | None = Field(default=None, max_length=140)
+
+    @field_validator("amount")
+    @classmethod
+    def _quantize_amount(cls, value: Decimal) -> Decimal:
+        return value.quantize(AMOUNT_QUANTUM)
 
 
 class Transaction(TransactionCreate):

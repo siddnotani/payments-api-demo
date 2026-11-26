@@ -1,5 +1,3 @@
-import re
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -257,15 +255,12 @@ def test_create_transaction_same_account_checked_before_store_full(monkeypatch):
     assert response.json() == {"detail": "from_account and to_account must differ"}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="decimal_places=2 ignores trailing zeros/exponents; amount is stored and "
-    "returned non-canonically (e.g. '125.5000000', '1E+2')",
+@pytest.mark.parametrize(
+    ("amount", "expected"),
+    [("1.500", "1.50"), ("125.5000000", "125.50"), ("1E+2", "100.00"), ("7", "7.00")],
 )
-@pytest.mark.parametrize("amount", ["1.500", "125.5000000", "1E+2"])
-def test_create_transaction_amount_is_canonical_two_decimal(amount):
+def test_create_transaction_amount_is_canonical_two_decimal(amount, expected):
     response = client.post("/transactions", json={**SAMPLE_TX, "amount": amount})
-    if response.status_code == 201:
-        assert re.fullmatch(r"\d+\.\d{2}", response.json()["amount"])
-    else:
-        assert response.status_code == 422
+    assert response.status_code == 201
+    assert response.json()["amount"] == expected
+    assert client.get("/transactions").json()[0]["amount"] == expected
