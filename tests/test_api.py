@@ -1,8 +1,18 @@
+import threading
+
 import pytest
 from fastapi.testclient import TestClient
 
+from app import scheduler
 from app.main import app, reset_store
-from app.scheduler import JobResult, job
+from app.scheduler import (
+    DEFAULT_TIMEOUT_SECONDS,
+    JobContext,
+    JobResult,
+    JobTimeoutError,
+    job,
+    run_job,
+)
 
 client = TestClient(app)
 
@@ -144,3 +154,72 @@ def test_simulated_incident_all_scenarios(scenario, fragment):
 def test_simulated_incident_rejects_unknown_scenario():
     response = client.post("/ops/incidents/meteor_strike")
     assert response.status_code == 422
+
+
+@pytest.fixture
+def isolated_jobs(monkeypatch):
+    monkeypatch.setattr(scheduler, "_registry", dict(scheduler._registry))
+    monkeypatch.setattr(scheduler, "_locks", dict(scheduler._locks))
+
+    def register(name, fn, **kwargs):
+        job(name, schedule="* * * * *", **kwargs)(fn)
+
+    return register
+
+
+def test_run_job_endpoint_passes_dry_run_to_job(isolated_jobs):
+    seen = []
+
+    def record(ctx: JobContext) -> JobResult:
+        seen.append(ctx.dry_run)
+        return JobResult(processed=1)
+
+    isolated_jobs("record", record)
+    assert client.post("/ops/jobs/record/run").status_code == 200
+    assert client.post("/ops/jobs/record/run", params={"dry_run": "false"}).status_code == 200
+    assert seen == [True, False]
+
+
+def test_registered_job_uses_default_timeout():
+    heartbeat = next(j for j in scheduler.registered_jobs() if j.name == "heartbeat")
+    assert DEFAULT_TIMEOUT_SECONDS == 30.0
+    assert heartbeat.timeout == DEFAULT_TIMEOUT_SECONDS
+
+
+def test_run_job_409_does_not_invoke_job_again(isolated_jobs):
+    calls = []
+    started, release = threading.Event(), threading.Event()
+
+    def slow(ctx: JobContext) -> JobResult:
+        calls.append(ctx.dry_run)
+        started.set()
+        release.wait(5)
+        return JobResult()
+
+    isolated_jobs("slow_409", slow)
+    first = threading.Thread(target=run_job, args=("slow_409",))
+    first.start()
+    try:
+        assert started.wait(5)
+        response = client.post("/ops/jobs/slow_409/run")
+        assert response.status_code == 409
+        assert response.json() == {"detail": "job 'slow_409' is already running"}
+    finally:
+        release.set()
+        first.join(5)
+    assert calls == [True]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="run_job catches every TimeoutError from future.result(), so a TimeoutError raised "
+    "by the job itself is reported as JobTimeoutError (HTTP 504) instead of reaching the caller",
+)
+def test_job_raising_timeout_error_is_not_reported_as_run_timeout(isolated_jobs):
+    def upstream_timeout(ctx: JobContext) -> JobResult:
+        raise TimeoutError("upstream FX feed timed out")
+
+    isolated_jobs("upstream_timeout", upstream_timeout)
+    with pytest.raises(TimeoutError, match="upstream FX feed") as excinfo:
+        run_job("upstream_timeout")
+    assert not isinstance(excinfo.value, JobTimeoutError)
