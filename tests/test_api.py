@@ -119,6 +119,61 @@ def test_list_transactions_does_not_publish_snapshot_after_concurrent_write(monk
     )
 
 
+def _count_list_serializations(monkeypatch):
+    calls = []
+    dump_json = payments._transaction_list_adapter.dump_json
+
+    def counting_dump_json(transactions):
+        calls.append(len(transactions))
+        return dump_json(transactions)
+
+    monkeypatch.setattr(payments._transaction_list_adapter, "dump_json", counting_dump_json)
+    return calls
+
+
+def test_list_transactions_reuses_cached_body_until_next_write(monkeypatch):
+    calls = _count_list_serializations(monkeypatch)
+    client.post("/transactions", json=SAMPLE_TX)
+
+    first = client.get("/transactions")
+    second = client.get("/transactions")
+    assert first.status_code == second.status_code == 200
+    assert second.content == first.content
+    assert calls == [1]
+
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "10.00"})
+    third = client.get("/transactions")
+    assert [tx["amount"] for tx in third.json()] == ["125.50", "10.00"]
+    assert calls == [1, 2]
+
+    reset_store()
+    assert client.get("/transactions").json() == []
+    assert calls == [1, 2, 0]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"to_account": SAMPLE_TX["from_account"]},
+        {"amount": "0"},
+        {"amount": "-5.00"},
+        {"from_account": ""},
+        {"currency": "JPY"},
+        {"reference": "x" * 141},
+    ],
+)
+def test_rejected_create_does_not_invalidate_list_cache(monkeypatch, overrides):
+    calls = _count_list_serializations(monkeypatch)
+    client.post("/transactions", json=SAMPLE_TX)
+    cached = client.get("/transactions").content
+
+    response = client.post("/transactions", json={**SAMPLE_TX, **overrides})
+    assert response.status_code == 422
+
+    assert client.get("/transactions").content == cached
+    assert calls == [1]
+
+
 def test_list_jobs_includes_heartbeat():
     names = [j["name"] for j in client.get("/ops/jobs").json()]
     assert "heartbeat" in names
