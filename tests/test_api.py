@@ -116,15 +116,14 @@ def test_create_transaction_rejects_non_positive_numeric_amount(amount, expected
     assert error["ctx"] == {"gt": "0"}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="NaN/Infinity JSON constants reach the 422 handler as floats and crash "
-    "JSON encoding with a 500 instead of returning a validation error",
-)
 @pytest.mark.parametrize("amount", ["NaN", "Infinity", "-Infinity"])
 def test_create_transaction_rejects_non_finite_numeric_amount(amount):
     response = _post_raw_transaction(f'{{"from_account":"A","to_account":"B","amount":{amount}}}')
     assert response.status_code == 422
+    (error,) = response.json()["detail"]
+    assert error["type"] == "finite_number"
+    assert error["loc"] == ["body", "amount"]
+    assert error["input"] == amount
 
 
 def test_create_transaction_rejects_malformed_json():

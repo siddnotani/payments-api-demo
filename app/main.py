@@ -29,7 +29,7 @@ log = logging.getLogger("payments.api")
 class DecimalJSONRequest(Request):
     async def json(self) -> Any:
         if not hasattr(self, "_json"):
-            self._json = json.loads(await self.body(), parse_float=Decimal)
+            self._json = json.loads(await self.body(), parse_float=Decimal, parse_constant=Decimal)
         return self._json
 
 
