@@ -39,6 +39,36 @@ def test_create_transaction():
     assert body["reference"] == "Invoice 42"
 
 
+@pytest.mark.parametrize(
+    ("amount", "expected"),
+    [
+        ("0.12345678901234567890", "0.12345678901234567890"),
+        ("1e400", "1E+400"),
+    ],
+)
+def test_create_transaction_preserves_numeric_amount(amount, expected):
+    with TestClient(app, raise_server_exceptions=False) as api:
+        response = api.post(
+            "/transactions",
+            content=f'{{"from_account":"A","to_account":"B","amount":{amount}}}',
+            headers={"Content-Type": "application/json"},
+        )
+
+    assert response.status_code == 201
+    assert response.json()["amount"] == expected
+
+
+def test_create_transaction_rejects_large_negative_numeric_amount():
+    with TestClient(app, raise_server_exceptions=False) as api:
+        response = api.post(
+            "/transactions",
+            content='{"from_account":"A","to_account":"B","amount":-1e5000}',
+            headers={"Content-Type": "application/json"},
+        )
+
+    assert response.status_code == 422
+
+
 def test_create_transaction_rejects_same_account():
     payload = {**SAMPLE_TX, "to_account": SAMPLE_TX["from_account"]}
     response = client.post("/transactions", json=payload)
