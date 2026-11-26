@@ -8,11 +8,11 @@ import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field, StringConstraints, field_validator
 
 import app.jobs  # noqa: F401  (registers in-app jobs)
 from app.scheduler import registered_jobs, run_job
@@ -37,12 +37,41 @@ class TransactionStatus(StrEnum):
     COMPLETED = "COMPLETED"
 
 
+IBAN_PATTERN = r"^[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}$"
+MAX_AMOUNT = Decimal("1000000000.00")
+AMOUNT_QUANTUM = Decimal("0.01")
+MAX_STORED_TRANSACTIONS = 10_000
+
+
+def _normalize_account(value: object) -> object:
+    return value.strip().upper() if isinstance(value, str) else value
+
+
+AccountId = Annotated[
+    str,
+    StringConstraints(min_length=15, max_length=34, pattern=IBAN_PATTERN),
+    BeforeValidator(_normalize_account),
+]
+
+
 class TransactionCreate(BaseModel):
-    from_account: str = Field(..., min_length=1, examples=["ES9121000418450200051332"])
-    to_account: str = Field(..., min_length=1, examples=["GB29NWBK60161331926819"])
-    amount: Decimal = Field(..., gt=0, examples=["125.50"])
+    from_account: AccountId = Field(..., examples=["ES9121000418450200051332"])
+    to_account: AccountId = Field(..., examples=["GB29NWBK60161331926819"])
+    amount: Decimal = Field(
+        ...,
+        gt=0,
+        le=MAX_AMOUNT,
+        max_digits=12,
+        decimal_places=2,
+        examples=["125.50"],
+    )
     currency: Currency = Currency.EUR
     reference: str | None = Field(default=None, max_length=140)
+
+    @field_validator("amount")
+    @classmethod
+    def _quantize_amount(cls, value: Decimal) -> Decimal:
+        return value.quantize(AMOUNT_QUANTUM)
 
 
 class Transaction(TransactionCreate):
@@ -101,6 +130,11 @@ def create_transaction(payload: TransactionCreate) -> Transaction:
         raise HTTPException(
             status_code=422,
             detail="from_account and to_account must differ",
+        )
+    if len(_transactions) >= MAX_STORED_TRANSACTIONS:
+        raise HTTPException(
+            status_code=status.HTTP_507_INSUFFICIENT_STORAGE,
+            detail=f"Transaction store is full ({MAX_STORED_TRANSACTIONS} records)",
         )
     tx = Transaction(
         id=str(uuid4()),
