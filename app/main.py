@@ -4,14 +4,20 @@ A deliberately small FastAPI service modelling a payments/transactions domain.
 State is held in memory so the service runs with no external dependencies.
 """
 
+import json
 import logging
+from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import APIRouter, FastAPI, HTTPException, Request, Response, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field
 
 import app.jobs  # noqa: F401  (registers in-app jobs)
@@ -19,11 +25,38 @@ from app.scheduler import registered_jobs, run_job
 
 log = logging.getLogger("payments.api")
 
+
+class DecimalJSONRequest(Request):
+    async def json(self) -> Any:
+        if not hasattr(self, "_json"):
+            self._json = json.loads(await self.body(), parse_float=Decimal, parse_constant=Decimal)
+        return self._json
+
+
+class DecimalJSONRoute(APIRoute):
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        handler = super().get_route_handler()
+
+        async def handle(request: Request) -> Response:
+            try:
+                return await handler(DecimalJSONRequest(request.scope, request.receive))
+            except RequestValidationError as exc:
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "detail": jsonable_encoder(exc.errors(), custom_encoder={Decimal: str}),
+                    },
+                )
+
+        return handle
+
+
 app = FastAPI(
     title="Payments Demo API",
     version="0.1.0",
     description="Minimal transactions API used for CI/CD and QA demos.",
 )
+transaction_create_router = APIRouter(route_class=DecimalJSONRoute)
 
 
 class Currency(StrEnum):
@@ -90,7 +123,7 @@ def health() -> HealthResponse:
     return HealthResponse(status="ok", transactions=len(_transactions))
 
 
-@app.post(
+@transaction_create_router.post(
     "/transactions",
     response_model=Transaction,
     status_code=status.HTTP_201_CREATED,
@@ -110,6 +143,9 @@ def create_transaction(payload: TransactionCreate) -> Transaction:
     )
     _transactions[tx.id] = tx
     return tx
+
+
+app.include_router(transaction_create_router)
 
 
 @app.get("/ops/jobs", response_model=list[JobInfo], tags=["ops"])

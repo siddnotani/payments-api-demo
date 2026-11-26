@@ -39,6 +39,140 @@ def test_create_transaction():
     assert body["reference"] == "Invoice 42"
 
 
+@pytest.mark.parametrize(
+    ("amount", "expected"),
+    [
+        ("0.12345678901234567890", "0.12345678901234567890"),
+        ("1e400", "1E+400"),
+    ],
+)
+def test_create_transaction_preserves_numeric_amount(amount, expected):
+    with TestClient(app, raise_server_exceptions=False) as api:
+        response = api.post(
+            "/transactions",
+            content=f'{{"from_account":"A","to_account":"B","amount":{amount}}}',
+            headers={"Content-Type": "application/json"},
+        )
+
+    assert response.status_code == 201
+    assert response.json()["amount"] == expected
+
+
+def test_create_transaction_rejects_large_negative_numeric_amount():
+    with TestClient(app, raise_server_exceptions=False) as api:
+        response = api.post(
+            "/transactions",
+            content='{"from_account":"A","to_account":"B","amount":-1e5000}',
+            headers={"Content-Type": "application/json"},
+        )
+
+    assert response.status_code == 422
+
+
+def _post_raw_transaction(body):
+    with TestClient(app, raise_server_exceptions=False) as api:
+        return api.post(
+            "/transactions",
+            content=body,
+            headers={"Content-Type": "application/json"},
+        )
+
+
+def test_create_transaction_numeric_amount_round_trips():
+    response = _post_raw_transaction(
+        '{"from_account":"A","to_account":"B","amount":0.12345678901234567890}'
+    )
+    assert response.status_code == 201
+    tx_id = response.json()["id"]
+
+    fetched = client.get(f"/transactions/{tx_id}")
+    assert fetched.status_code == 200
+    assert fetched.json()["amount"] == "0.12345678901234567890"
+    assert [tx["amount"] for tx in client.get("/transactions").json()] == ["0.12345678901234567890"]
+
+
+def test_create_transaction_accepts_integer_numeric_amount():
+    response = _post_raw_transaction('{"from_account":"A","to_account":"B","amount":100}')
+    assert response.status_code == 201
+    assert response.json()["amount"] == "100"
+
+
+@pytest.mark.parametrize(
+    ("amount", "expected_input"),
+    [
+        ("0", 0),
+        ("0.0", "0.0"),
+        ("-1.5", "-1.5"),
+        ("-1e5000", "-1E+5000"),
+    ],
+)
+def test_create_transaction_rejects_non_positive_numeric_amount(amount, expected_input):
+    response = _post_raw_transaction(f'{{"from_account":"A","to_account":"B","amount":{amount}}}')
+    assert response.status_code == 422
+    (error,) = response.json()["detail"]
+    assert error["type"] == "greater_than"
+    assert error["loc"] == ["body", "amount"]
+    assert error["input"] == expected_input
+    assert error["ctx"] == {"gt": "0"}
+
+
+@pytest.mark.parametrize("amount", ["NaN", "Infinity", "-Infinity"])
+def test_create_transaction_rejects_non_finite_numeric_amount(amount):
+    response = _post_raw_transaction(f'{{"from_account":"A","to_account":"B","amount":{amount}}}')
+    assert response.status_code == 422
+    (error,) = response.json()["detail"]
+    assert error["type"] == "finite_number"
+    assert error["loc"] == ["body", "amount"]
+    assert error["input"] == amount
+
+
+def test_create_transaction_rejects_malformed_json():
+    response = _post_raw_transaction('{"from_account":"A",')
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["type"] == "json_invalid"
+
+
+def test_create_transaction_rejects_same_account_numeric_amount():
+    response = _post_raw_transaction('{"from_account":"A","to_account":"A","amount":1.5}')
+    assert response.status_code == 422
+    assert response.json() == {"detail": "from_account and to_account must differ"}
+
+
+@pytest.mark.parametrize(
+    ("overrides", "field"),
+    [
+        ({"from_account": ""}, "from_account"),
+        ({"to_account": ""}, "to_account"),
+        ({"currency": "JPY"}, "currency"),
+        ({"reference": "x" * 141}, "reference"),
+        ({"amount": "abc"}, "amount"),
+        ({"amount": None}, "amount"),
+    ],
+)
+def test_create_transaction_rejects_invalid_fields(overrides, field):
+    response = client.post("/transactions", json={**SAMPLE_TX, **overrides})
+    assert response.status_code == 422
+    (error,) = response.json()["detail"]
+    assert error["loc"] == ["body", field]
+
+
+def test_create_transaction_rejects_missing_amount():
+    payload = {k: v for k, v in SAMPLE_TX.items() if k != "amount"}
+    response = client.post("/transactions", json=payload)
+    assert response.status_code == 422
+    (error,) = response.json()["detail"]
+    assert error["type"] == "missing"
+    assert error["loc"] == ["body", "amount"]
+
+
+def test_openapi_documents_create_transaction():
+    operation = client.get("/openapi.json").json()["paths"]["/transactions"]["post"]
+    assert operation["requestBody"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/TransactionCreate"
+    }
+    assert set(operation["responses"]) == {"201", "422"}
+
+
 def test_create_transaction_rejects_same_account():
     payload = {**SAMPLE_TX, "to_account": SAMPLE_TX["from_account"]}
     response = client.post("/transactions", json=payload)
