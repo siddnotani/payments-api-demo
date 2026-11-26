@@ -1,6 +1,10 @@
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
+
 import pytest
 from fastapi.testclient import TestClient
 
+from app import main as payments
 from app.main import app, reset_store
 from app.scheduler import JobResult, job
 
@@ -61,6 +65,58 @@ def test_list_transactions():
     body = response.json()
     assert len(body) == 2
     assert [tx["amount"] for tx in body] == ["125.50", "10.00"]
+
+
+def test_list_transactions_preserves_json_bytes_and_schema():
+    first = client.post("/transactions", json={**SAMPLE_TX, "reference": 'Café "☕"\n'})
+    assert first.status_code == 201
+    assert client.get("/transactions").content == b"[" + first.content + b"]"
+
+    payload = {**SAMPLE_TX, "currency": "USD", "reference": None}
+    second = client.post("/transactions", json=payload)
+    assert second.status_code == 201
+
+    response = client.get("/transactions")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/json"
+    assert response.content == b"[" + first.content + b"," + second.content + b"]"
+
+    api = client.get("/openapi.json").json()
+    schema = api["paths"]["/transactions"]["get"]["responses"]["200"]["content"]
+    assert schema["application/json"]["schema"]["items"] == {
+        "$ref": "#/components/schemas/Transaction"
+    }
+
+    reset_store()
+    assert client.get("/transactions").content == b"[]"
+
+
+def test_list_transactions_does_not_publish_snapshot_after_concurrent_write(monkeypatch):
+    first = client.post("/transactions", json=SAMPLE_TX)
+    assert first.status_code == 201
+    serializing = Event()
+    resume = Event()
+    dump_json = payments._transaction_list_adapter.dump_json
+
+    def pause_before_serializing(transactions):
+        serializing.set()
+        assert resume.wait(timeout=5)
+        return dump_json(transactions)
+
+    monkeypatch.setattr(payments._transaction_list_adapter, "dump_json", pause_before_serializing)
+    with ThreadPoolExecutor() as executor:
+        listing = executor.submit(client.get, "/transactions")
+        try:
+            assert serializing.wait(timeout=5)
+            second = client.post("/transactions", json={**SAMPLE_TX, "amount": "10.00"})
+            assert second.status_code == 201
+        finally:
+            resume.set()
+        assert listing.result(timeout=5).content == b"[" + first.content + b"]"
+
+    assert (
+        client.get("/transactions").content == b"[" + first.content + b"," + second.content + b"]"
+    )
 
 
 def test_list_jobs_includes_heartbeat():

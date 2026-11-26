@@ -8,11 +8,12 @@ import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
+from threading import Lock
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, status
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, HTTPException, Response, status
+from pydantic import BaseModel, Field, TypeAdapter
 
 import app.jobs  # noqa: F401  (registers in-app jobs)
 from app.scheduler import registered_jobs, run_job
@@ -78,11 +79,23 @@ _INCIDENT_MESSAGES: dict[str, str] = {
 
 
 _transactions: dict[str, Transaction] = {}
+_transaction_list_adapter = TypeAdapter(list[Transaction])
+_transaction_lock = Lock()
+_transaction_revision = object()
+_transaction_list_json: bytes | None = None
+
+
+def _invalidate_transaction_list() -> None:
+    global _transaction_revision, _transaction_list_json
+    _transaction_revision = object()
+    _transaction_list_json = None
 
 
 def reset_store() -> None:
     """Clear all stored transactions (used by tests)."""
-    _transactions.clear()
+    with _transaction_lock:
+        _transactions.clear()
+        _invalidate_transaction_list()
 
 
 @app.get("/health", response_model=HealthResponse, tags=["ops"])
@@ -108,7 +121,9 @@ def create_transaction(payload: TransactionCreate) -> Transaction:
         created_at=datetime.now(UTC),
         **payload.model_dump(),
     )
-    _transactions[tx.id] = tx
+    with _transaction_lock:
+        _transactions[tx.id] = tx
+        _invalidate_transaction_list()
     return tx
 
 
@@ -141,9 +156,25 @@ def simulate_incident(scenario: IncidentScenario) -> dict[str, str]:
     return {"scenario": scenario, "error": message}
 
 
+def _list_transaction_bytes() -> bytes:
+    global _transaction_list_json
+    with _transaction_lock:
+        if _transaction_list_json is not None:
+            return _transaction_list_json
+        revision = _transaction_revision
+        transactions = list(_transactions.values())
+
+    transactions.sort(key=lambda t: t.created_at)
+    body = _transaction_list_adapter.dump_json(transactions)
+    with _transaction_lock:
+        if revision is _transaction_revision:
+            _transaction_list_json = body
+    return body
+
+
 @app.get("/transactions", response_model=list[Transaction], tags=["transactions"])
-def list_transactions() -> list[Transaction]:
-    return sorted(_transactions.values(), key=lambda t: t.created_at)
+def list_transactions() -> Response:
+    return Response(_list_transaction_bytes(), media_type="application/json")
 
 
 @app.get("/transactions/{transaction_id}", response_model=Transaction, tags=["transactions"])
