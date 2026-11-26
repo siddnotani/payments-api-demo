@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable
-from concurrent.futures import Future
+from concurrent.futures import Future, wait
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -115,10 +115,9 @@ def run_job(name: str, *, dry_run: bool = True) -> JobResult:
     except BaseException:
         lock.release()
         raise
-    try:
-        result = future.result(timeout=spec.timeout)
-    except TimeoutError as exc:
+    if not wait([future], timeout=spec.timeout).done:
         log.error("job.timeout", extra={"job": name, "timeout": spec.timeout})
-        raise JobTimeoutError(f"job {name!r} did not finish within {spec.timeout}s") from exc
+        raise JobTimeoutError(f"job {name!r} did not finish within {spec.timeout}s")
+    result = future.result()
     log.info("job.done", extra={"job": name, "processed": result.processed})
     return result

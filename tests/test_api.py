@@ -210,11 +210,6 @@ def test_run_job_409_does_not_invoke_job_again(isolated_jobs):
     assert calls == [True]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="run_job catches every TimeoutError from future.result(), so a TimeoutError raised "
-    "by the job itself is reported as JobTimeoutError (HTTP 504) instead of reaching the caller",
-)
 def test_job_raising_timeout_error_is_not_reported_as_run_timeout(isolated_jobs):
     def upstream_timeout(ctx: JobContext) -> JobResult:
         raise TimeoutError("upstream FX feed timed out")
