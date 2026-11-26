@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
 
 import app.jobs  # noqa: F401  (registers in-app jobs)
-from app.scheduler import registered_jobs, run_job
+from app.scheduler import JobAlreadyRunningError, JobTimeoutError, registered_jobs, run_job
 
 log = logging.getLogger("payments.api")
 
@@ -125,7 +125,12 @@ def list_jobs() -> list[JobInfo]:
 def trigger_job(name: str, dry_run: bool = True) -> JobRunResponse:
     if name not in {j.name for j in registered_jobs()}:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Job {name} not found")
-    result = run_job(name, dry_run=dry_run)
+    try:
+        result = run_job(name, dry_run=dry_run)
+    except JobAlreadyRunningError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except JobTimeoutError as exc:
+        raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=str(exc)) from exc
     return JobRunResponse(job=name, processed=result.processed, notes=result.notes)
 
 
