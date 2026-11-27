@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
@@ -250,3 +251,173 @@ def test_analytics_summary_timestamps_are_min_and_max_created_at(monkeypatch):
 
 def test_analytics_summary_rejects_post():
     assert client.post("/analytics/summary").status_code == 405
+
+
+OTHER_ACCOUNT = "FR1420041010050500013M02606"
+
+
+def test_account_analytics_unknown_account_404():
+    response = client.get("/analytics/accounts/UNKNOWN")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Account UNKNOWN not found"
+
+
+def test_account_analytics_sender_stats():
+    client.post("/transactions", json=SAMPLE_TX)
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "10.00"})
+
+    response = client.get(f"/analytics/accounts/{SAMPLE_TX['from_account']}")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["account"] == SAMPLE_TX["from_account"]
+    assert body["transaction_count"] == 2
+    assert body["by_currency"] == [
+        {
+            "currency": "EUR",
+            "sent_count": 2,
+            "received_count": 0,
+            "total_sent": "135.50",
+            "total_received": "0",
+            "net": "-135.50",
+        }
+    ]
+
+
+def test_account_analytics_receiver_stats():
+    client.post("/transactions", json=SAMPLE_TX)
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "10.00"})
+
+    body = client.get(f"/analytics/accounts/{SAMPLE_TX['to_account']}").json()
+    assert body["transaction_count"] == 2
+    (eur,) = body["by_currency"]
+    assert eur["currency"] == "EUR"
+    assert eur["received_count"] == 2
+    assert eur["sent_count"] == 0
+    assert eur["total_received"] == "135.50"
+    assert eur["net"] == "135.50"
+
+
+def test_account_analytics_both_directions_net():
+    client.post("/transactions", json=SAMPLE_TX)
+    reversed_tx = {
+        **SAMPLE_TX,
+        "from_account": SAMPLE_TX["to_account"],
+        "to_account": SAMPLE_TX["from_account"],
+        "amount": "25.50",
+    }
+    client.post("/transactions", json=reversed_tx)
+
+    body = client.get(f"/analytics/accounts/{SAMPLE_TX['from_account']}").json()
+    assert body["transaction_count"] == 2
+    (eur,) = body["by_currency"]
+    assert eur["sent_count"] == 1
+    assert eur["received_count"] == 1
+    assert eur["total_sent"] == "125.50"
+    assert eur["total_received"] == "25.50"
+    assert eur["net"] == "-100.00"
+
+
+def test_account_analytics_groups_by_currency():
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "50.00", "currency": "USD"})
+    client.post("/transactions", json=SAMPLE_TX)
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "10.00"})
+
+    body = client.get(f"/analytics/accounts/{SAMPLE_TX['from_account']}").json()
+    assert body["transaction_count"] == 3
+    assert [c["currency"] for c in body["by_currency"]] == ["EUR", "USD"]
+    eur, usd = body["by_currency"]
+    assert (eur["sent_count"], eur["total_sent"], eur["net"]) == (2, "135.50", "-135.50")
+    assert (usd["sent_count"], usd["total_sent"], usd["net"]) == (1, "50.00", "-50.00")
+
+
+def test_account_analytics_excludes_unrelated_transactions():
+    client.post("/transactions", json=SAMPLE_TX)
+    before = client.get(f"/analytics/accounts/{SAMPLE_TX['from_account']}").json()
+
+    unrelated = {**SAMPLE_TX, "from_account": SAMPLE_TX["to_account"], "to_account": OTHER_ACCOUNT}
+    client.post("/transactions", json={**unrelated, "amount": "999.99"})
+
+    after = client.get(f"/analytics/accounts/{SAMPLE_TX['from_account']}").json()
+    assert after == before
+    assert after["transaction_count"] == 1
+
+
+def test_account_analytics_timestamps(monkeypatch):
+    import app.main as main
+
+    stamps = iter(
+        [
+            datetime(2026, 1, 3, tzinfo=UTC),
+            datetime(2026, 1, 1, tzinfo=UTC),
+            datetime(2026, 1, 5, tzinfo=UTC),
+            datetime(2026, 1, 2, tzinfo=UTC),
+        ]
+    )
+
+    class FakeDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return next(stamps)
+
+    monkeypatch.setattr(main, "datetime", FakeDatetime)
+    client.post("/transactions", json=SAMPLE_TX)
+    client.post("/transactions", json=SAMPLE_TX)
+    unrelated = {**SAMPLE_TX, "from_account": SAMPLE_TX["to_account"], "to_account": OTHER_ACCOUNT}
+    client.post("/transactions", json=unrelated)
+    client.post("/transactions", json=SAMPLE_TX)
+
+    body = client.get(f"/analytics/accounts/{SAMPLE_TX['from_account']}").json()
+    assert body["transaction_count"] == 3
+    assert body["first_transaction_at"] == "2026-01-01T00:00:00Z"
+    assert body["last_transaction_at"] == "2026-01-03T00:00:00Z"
+
+
+def test_account_analytics_large_amounts_stay_exact():
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "1E+40"})
+    client.post("/transactions", json={**SAMPLE_TX, "amount": "0.01"})
+
+    (eur,) = client.get(f"/analytics/accounts/{SAMPLE_TX['from_account']}").json()["by_currency"]
+    assert eur["total_sent"] == "1" + "0" * 40 + ".01"
+    assert eur["net"] == "-1" + "0" * 40 + ".01"
+
+
+def test_account_analytics_rejects_post():
+    client.post("/transactions", json=SAMPLE_TX)
+    response = client.post(f"/analytics/accounts/{SAMPLE_TX['from_account']}")
+    assert response.status_code == 405
+
+
+def test_account_analytics_consistent_with_summary():
+    accounts = [SAMPLE_TX["from_account"], SAMPLE_TX["to_account"], OTHER_ACCOUNT]
+    txs = [
+        (accounts[0], accounts[1], "125.50", "EUR"),
+        (accounts[1], accounts[2], "10.00", "EUR"),
+        (accounts[2], accounts[0], "7.25", "USD"),
+        (accounts[0], accounts[2], "1.10", "USD"),
+        (accounts[1], accounts[0], "3.00", "GBP"),
+    ]
+    for from_account, to_account, amount, currency in txs:
+        tx = {"from_account": from_account, "to_account": to_account}
+        client.post("/transactions", json={**tx, "amount": amount, "currency": currency})
+
+    summary = client.get("/analytics/summary").json()
+    per_account = [client.get(f"/analytics/accounts/{a}").json() for a in accounts]
+
+    for currency_summary in summary["by_currency"]:
+        currency = currency_summary["currency"]
+        stats = [
+            s for body in per_account for s in body["by_currency"] if s["currency"] == currency
+        ]
+        assert sum(s["sent_count"] for s in stats) == currency_summary["count"]
+        assert sum(s["received_count"] for s in stats) == currency_summary["count"]
+        assert sum(Decimal(s["total_sent"]) for s in stats) == Decimal(
+            currency_summary["total_amount"]
+        )
+        assert sum(Decimal(s["total_received"]) for s in stats) == Decimal(
+            currency_summary["total_amount"]
+        )
+        assert sum(Decimal(s["net"]) for s in stats) == 0
+
+    assert (
+        sum(body["transaction_count"] for body in per_account) == 2 * summary["total_transactions"]
+    )

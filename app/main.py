@@ -83,6 +83,23 @@ class AnalyticsSummary(BaseModel):
     last_transaction_at: datetime | None
 
 
+class AccountCurrencyStats(BaseModel):
+    currency: Currency
+    sent_count: int
+    received_count: int
+    total_sent: Decimal
+    total_received: Decimal
+    net: Decimal
+
+
+class AccountAnalytics(BaseModel):
+    account: str
+    transaction_count: int
+    by_currency: list[AccountCurrencyStats]
+    first_transaction_at: datetime | None
+    last_transaction_at: datetime | None
+
+
 IncidentScenario = Literal["fx_timeout", "ledger_drift", "duplicate_settlement"]
 
 _INCIDENT_MESSAGES: dict[str, str] = {
@@ -211,4 +228,53 @@ def analytics_summary() -> AnalyticsSummary:
         by_currency=summaries,
         first_transaction_at=min(timestamps, default=None),
         last_transaction_at=max(timestamps, default=None),
+    )
+
+
+@app.get("/analytics/accounts/{account}", response_model=AccountAnalytics, tags=["analytics"])
+def account_analytics(account: str) -> AccountAnalytics:
+    txs = [
+        tx
+        for tx in _transactions.values()
+        if tx.from_account == account or tx.to_account == account
+    ]
+    if not txs:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Account {account} not found",
+        )
+
+    totals: dict[Currency, dict[str, Decimal | int]] = defaultdict(
+        lambda: {
+            "sent_count": 0,
+            "received_count": 0,
+            "total_sent": Decimal(0),
+            "total_received": Decimal(0),
+        }
+    )
+    for tx in txs:
+        stats = totals[tx.currency]
+        if tx.from_account == account:
+            stats["sent_count"] += 1
+            stats["total_sent"] = _EXACT.add(stats["total_sent"], tx.amount)
+        if tx.to_account == account:
+            stats["received_count"] += 1
+            stats["total_received"] = _EXACT.add(stats["total_received"], tx.amount)
+
+    by_currency = [
+        AccountCurrencyStats(
+            currency=currency,
+            **stats,
+            net=_EXACT.subtract(stats["total_received"], stats["total_sent"]),
+        )
+        for currency, stats in sorted(totals.items())
+    ]
+
+    timestamps = [tx.created_at for tx in txs]
+    return AccountAnalytics(
+        account=account,
+        transaction_count=len(txs),
+        by_currency=by_currency,
+        first_transaction_at=min(timestamps),
+        last_transaction_at=max(timestamps),
     )
